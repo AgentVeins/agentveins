@@ -22,7 +22,7 @@ These came out of brainstorming and are not open for relitigation during impleme
 | Engine structure | Ordered array of pure check functions | Velocity and approvals become additive. Each check is unit-testable with plain objects. |
 | Solana settlement | One adapter, two modes (`x402` \| `direct`) | Both share the build-and-sign path; they differ only in who submits. `direct` is demo insurance against facilitator downtime; `x402` makes the protocol claim literally true. |
 | Budget window | UTC calendar day | "Daily" meaning different things per deployment is a support nightmare. |
-| `docs/6-week-plan.md` | Will not exist | Duplicates the one-pager's plan, CLAUDE.md's scope section, and the implementation plan. Remove the CLAUDE.md reference instead. |
+| `docs/6-week-plan.md` | Will not exist | Duplicates CLAUDE.md's scope section and the implementation plan. Remove the CLAUDE.md reference instead. |
 
 ### 2.1 Approved deviations from current README/CLAUDE.md
 
@@ -148,7 +148,7 @@ interface AuditEntry {
 }
 ```
 
-**Why both a chain and a signature.** They stop different attacks and neither is sufficient alone: `prevHash` makes deletion and reordering detectable; the signature makes forging new entries impossible without the operator key. `verifyAuditLog()` is a public export so the demo — and a grant reviewer — can run it.
+**Why both a chain and a signature.** They stop different attacks and neither is sufficient alone: `prevHash` makes deletion and reordering detectable; the signature makes forging new entries impossible without the operator key. `verifyAuditLog()` is a public export so the demo — and any third-party auditor — can run it.
 
 **Canonicalization.** Fields are serialized in a fixed key order with no insignificant whitespace, so the hash is reproducible across Node versions and platforms.
 
