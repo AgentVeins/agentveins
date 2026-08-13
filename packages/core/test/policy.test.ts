@@ -1,0 +1,67 @@
+import { describe, expect, it } from "vitest";
+import { validatePolicy } from "../src/policy.js";
+import type { Policy } from "../src/types.js";
+
+function valid(): Policy {
+  return {
+    budgets: [
+      { period: "daily", limit: "0.50", currency: "USDC" },
+      { period: "per_tx", limit: "0.10", currency: "USDC" },
+    ],
+    vendors: { mode: "allowlist", entries: ["api.weather.com"] },
+    killSwitch: { frozen: false },
+  };
+}
+
+describe("validatePolicy", () => {
+  it("accepts a well-formed policy", () => {
+    expect(() => validatePolicy(valid())).not.toThrow();
+  });
+
+  it("rejects an unknown budget period", () => {
+    const p = valid();
+    (p.budgets[0] as { period: string }).period = "weekly";
+    expect(() => validatePolicy(p)).toThrow(/unknown budget period/);
+  });
+
+  it("rejects duplicate budget periods", () => {
+    const p = valid();
+    p.budgets = [
+      { period: "daily", limit: "1.00", currency: "USDC" },
+      { period: "daily", limit: "2.00", currency: "USDC" },
+    ];
+    expect(() => validatePolicy(p)).toThrow(/duplicate budget period/);
+  });
+
+  it("rejects an empty budget list", () => {
+    const p = valid();
+    p.budgets = [];
+    expect(() => validatePolicy(p)).toThrow(/non-empty/);
+  });
+
+  it("rejects unparseable, negative, and over-precise limits", () => {
+    for (const limit of ["abc", "-1.00", "0.0000001"]) {
+      const p = valid();
+      p.budgets = [{ period: "daily", limit, currency: "USDC" }];
+      expect(() => validatePolicy(p), limit).toThrow(RangeError);
+    }
+  });
+
+  it("rejects an unsupported currency", () => {
+    const p = valid();
+    (p.budgets[0] as { currency: string }).currency = "EUR";
+    expect(() => validatePolicy(p)).toThrow(/unsupported currency/);
+  });
+
+  it("rejects allowlist mode with no entries", () => {
+    const p = valid();
+    p.vendors.entries = [];
+    expect(() => validatePolicy(p)).toThrow(/at least one vendor/);
+  });
+
+  it("rejects a non-boolean kill switch", () => {
+    const p = valid();
+    (p.killSwitch as { frozen: unknown }).frozen = "yes";
+    expect(() => validatePolicy(p)).toThrow(TypeError);
+  });
+});
