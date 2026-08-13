@@ -6,3 +6,5 @@
 /// <reference path="../../../node_modules/@types/node/url.d.ts" />
 /// <reference path="../../../node_modules/@types/node/crypto.d.ts" />
 /// <reference path="../../../node_modules/@types/node/fs/promises.d.ts" />
+/// <reference path="../../../node_modules/@types/node/buffer.d.ts" />
+/// <reference path="../../../node_modules/@types/node/buffer.buffer.d.ts" />
