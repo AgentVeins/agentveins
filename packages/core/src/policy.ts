@@ -32,6 +32,11 @@ export function validatePolicy(policy: Policy): void {
   if (!Array.isArray(policy.vendors.entries) || policy.vendors.entries.length === 0) {
     throw new RangeError("allowlist mode requires at least one vendor entry");
   }
+  for (const entry of policy.vendors.entries) {
+    if (typeof entry !== "string" || entry.trim() === "") {
+      throw new RangeError(`vendor allowlist entries must be non-empty strings, received: ${String(entry)}`);
+    }
+  }
 
   if (policy.killSwitch === null || typeof policy.killSwitch !== "object" || typeof policy.killSwitch.frozen !== "boolean") {
     throw new TypeError("policy.killSwitch.frozen must be a boolean");

@@ -59,6 +59,18 @@ describe("validatePolicy", () => {
     expect(() => validatePolicy(p)).toThrow(/at least one vendor/);
   });
 
+  it("rejects a non-string vendor entry", () => {
+    const p = valid();
+    p.vendors.entries = [123 as unknown as string];
+    expect(() => validatePolicy(p)).toThrow(RangeError);
+  });
+
+  it("rejects an empty-string vendor entry", () => {
+    const p = valid();
+    p.vendors.entries = ["   "];
+    expect(() => validatePolicy(p)).toThrow(RangeError);
+  });
+
   it("rejects a non-boolean kill switch", () => {
     const p = valid();
     (p.killSwitch as { frozen: unknown }).frozen = "yes";

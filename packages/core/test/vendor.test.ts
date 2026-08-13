@@ -24,4 +24,12 @@ describe("normalizeVendor", () => {
   it("rejects malformed URLs", () => {
     expect(() => normalizeVendor("https://")).toThrow(RangeError);
   });
+
+  it("resolves a special-scheme URL missing the double slash to its hostname", () => {
+    expect(normalizeVendor("https:evil.com")).toBe("evil.com");
+  });
+
+  it("passes a non-http scheme through unchanged", () => {
+    expect(normalizeVendor("solana:abc")).toBe("solana:abc");
+  });
 });

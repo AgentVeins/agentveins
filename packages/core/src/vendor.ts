@@ -1,6 +1,6 @@
 import { URL } from "node:url";
 
-const URL_PREFIX = /^https?:\/\//i;
+const HTTP_SCHEME = /^https?:/i;
 
 export function normalizeVendor(to: string): string {
   if (typeof to !== "string") {
@@ -10,8 +10,10 @@ export function normalizeVendor(to: string): string {
   if (trimmed === "") {
     throw new RangeError("vendor must not be empty");
   }
-  if (!URL_PREFIX.test(trimmed)) {
-    // Base58 addresses are case-sensitive, so bare vendors pass through untouched.
+  if (!HTTP_SCHEME.test(trimmed)) {
+    // http(s) auto-inserts "//" as a special scheme, but other schemes (solana:...) and
+    // bare vendors do not; only http(s)-prefixed strings get parsed as URLs. Base58
+    // addresses are case-sensitive, so anything that falls through here stays untouched.
     return trimmed;
   }
   let url: URL;
