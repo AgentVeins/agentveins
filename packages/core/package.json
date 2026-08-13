@@ -1,0 +1,15 @@
+{
+  "name": "@agentveins/core",
+  "version": "0.0.1",
+  "description": "Spend governance for AI agents: budgets, allowlists, kill switch, signed audit log.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./sinks/file": "./dist/audit/fileSink.js"
+  },
+  "files": ["dist"],
+  "scripts": { "build": "tsc --build" }
+}
