@@ -27,6 +27,11 @@ describe("parseAmount", () => {
   it("rejects non-string input", () => {
     expect(() => parseAmount(5 as unknown as string)).toThrow(TypeError);
   });
+
+  it("honors a non-default decimals count", () => {
+    expect(parseAmount("123", 0)).toBe(123n);
+    expect(parseAmount("123.45", 2)).toBe(12345n);
+  });
 });
 
 describe("formatAmount", () => {
@@ -41,5 +46,23 @@ describe("formatAmount", () => {
     for (const minor of [0n, 1n, 50_000n, 25_000_000n, 999_999_999_999n]) {
       expect(parseAmount(formatAmount(minor))).toBe(minor);
     }
+  });
+
+  it("renders whole numbers with no separator when decimals is 0", () => {
+    expect(formatAmount(123n, 0)).toBe("123");
+  });
+
+  it("renders with a non-default decimals count", () => {
+    expect(formatAmount(12345n, 2)).toBe("123.45");
+  });
+
+  it("round-trips through parseAmount at non-default decimals", () => {
+    expect(parseAmount(formatAmount(123n, 0), 0)).toBe(123n);
+    expect(parseAmount(formatAmount(12345n, 2), 2)).toBe(12345n);
+  });
+
+  it("prefixes negative minor units with a minus sign", () => {
+    expect(formatAmount(-5n)).toBe("-0.000005");
+    expect(formatAmount(-25_000_000n)).toBe("-25.000000");
   });
 });

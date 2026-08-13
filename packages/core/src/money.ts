@@ -18,6 +18,11 @@ export function parseAmount(value: string, decimals: number = USDC_DECIMALS): bi
 }
 
 export function formatAmount(minor: bigint, decimals: number = USDC_DECIMALS): string {
-  const digits = minor.toString().padStart(decimals + 1, "0");
-  return `${digits.slice(0, -decimals)}.${digits.slice(-decimals)}`;
+  const sign = minor < 0n ? "-" : "";
+  const digits = (minor < 0n ? -minor : minor).toString().padStart(decimals + 1, "0");
+  const whole = digits.slice(0, digits.length - decimals);
+  if (decimals === 0) {
+    return `${sign}${whole}`;
+  }
+  return `${sign}${whole}.${digits.slice(-decimals)}`;
 }
