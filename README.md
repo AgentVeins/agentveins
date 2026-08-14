@@ -68,7 +68,7 @@ await guard.freeze(); // emergency stop, instantly
 
 `signingKey` is an ed25519 private key you own (`generateKeyPairSync("ed25519")`); it signs audit entries and the anchor, and never leaves your process. Keep the `anchor` store: without it a deleted `audit.jsonl` looks like a fresh start and silently restores the full budget. If the audit log cannot be written, the guard latches and blocks every payment with an `audit_unavailable` violation — a guard that cannot record does not authorize.
 
-Integration target: under 10 minutes from `npm install` to your first governed payment. The guard, policy engine, and signed audit log are live today; `@agentveins/adapter-solana` is still landing — track it on the roadmap below.
+Integration target: under 10 minutes from `npm install` to your first governed payment. The guard, policy engine, and signed audit log are live today, and `@agentveins/adapter-solana` carries both settlement modes — a direct USDC transfer and x402 — against Solana devnet.
 
 ## What AgentVeins is NOT
 
@@ -81,14 +81,14 @@ It sits between your agent and its money. Every wallet, rail, and framework is a
 ## How it's built
 
 - **Policy is data, not code** — JSON-serializable, versionable, diffable; dashboards can edit it without SDK changes
-- **Chain adapters** — Solana devnet first (adapter in progress), Base next; policy logic never touches chain code
+- **Chain adapters** — Solana devnet first, Base next; policy logic never touches chain code. In x402 mode the adapter re-checks the vendor's 402 quote against the amount the guard approved and signs nothing if the vendor asks for more
 - **Blocked ≠ thrown** — structured violations so agents can retry a cheaper vendor or escalate to a human; rail errors return `failed` separately, so a network hiccup never looks like a policy denial
 - **Audit log** — append-only JSONL with hash-chained, signed entries; boring, dependency-free, verifiable. Configured as in the quickstart — log plus anchor — it detects edits, reordering, forged entries, and a log swapped in from another agent outright, and it detects truncation or deletion as long as the signed anchor survives. Two limits stated plainly: drop the `anchor` and truncation stops being detectable; and restoring an older matching snapshot of *both* files is not detected either way — closing that needs append-only or remote storage, which is post-MVP.
 
 ## Roadmap
 
 - [x] Policy engine: budgets, allowlist, kill switch
-- [ ] Solana devnet payment path (x402)
+- [x] Solana devnet payment path (x402)
 - [x] Signed audit log
 - [ ] Base adapter
 - [ ] Velocity rules

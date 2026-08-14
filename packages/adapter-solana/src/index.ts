@@ -19,6 +19,7 @@ export interface SolanaAdapterConfig {
   usdcMint?: string;
   facilitatorUrl?: string;
   pollIntervalMs?: number;
+  fetchImpl?: typeof fetch;
   buildSignedTransfer?: (to: string, amountMinor: bigint) => Promise<SignedTransfer>;
   sendTransaction?: (wireTransaction: string) => Promise<string>;
   getSignatureStatus?: (signature: string) => Promise<SignatureStatus | null>;
@@ -61,24 +62,27 @@ export function solanaAdapter(config: SolanaAdapterConfig): WalletAdapter {
       if (req.amountMinor <= 0n) {
         throw new RangeError("settlement amount must be greater than zero");
       }
-      const signed = await build(req.to, req.amountMinor);
 
-      if (config.mode === "direct") {
-        await send(signed.wireTransaction);
-        await confirmSignature(
-          { getSignatureStatus, getBlockHeight, pollIntervalMs },
-          signed.signature,
-          signed.lastValidBlockHeight,
-        );
-        return { txSig: signed.signature, rail: "solana" };
+      if (config.mode === "x402") {
+        // Nothing is signed until the 402 quote clears the price check, so `req.to` here is the
+        // vendor's URL and the on-chain destination comes from the quote's `payTo`.
+        return settleViaFacilitator({
+          vendorUrl: req.to,
+          approvedAmountMinor: req.amountMinor,
+          signTransfer: build,
+          facilitatorUrl: config.facilitatorUrl ?? DEFAULT_FACILITATOR_URL,
+          ...(config.fetchImpl === undefined ? {} : { fetchImpl: config.fetchImpl }),
+        });
       }
 
-      return settleViaFacilitator({
-        vendorUrl: req.to,
-        approvedAmountMinor: req.amountMinor,
-        signed,
-        facilitatorUrl: config.facilitatorUrl ?? DEFAULT_FACILITATOR_URL,
-      });
+      const signed = await build(req.to, req.amountMinor);
+      await send(signed.wireTransaction);
+      await confirmSignature(
+        { getSignatureStatus, getBlockHeight, pollIntervalMs },
+        signed.signature,
+        signed.lastValidBlockHeight,
+      );
+      return { txSig: signed.signature, rail: "solana" };
     },
   };
 }
@@ -86,4 +90,6 @@ export function solanaAdapter(config: SolanaAdapterConfig): WalletAdapter {
 export { buildSignedTransfer } from "./transfer.js";
 export type { SignedTransfer, TransferDeps } from "./transfer.js";
 export { TransactionNotConfirmedError } from "./direct.js";
+export { PriceMismatchError, settleViaFacilitator } from "./x402.js";
+export type { FacilitatorInput } from "./x402.js";
 export type { ConfirmationLevel, SignatureStatus } from "./direct.js";
