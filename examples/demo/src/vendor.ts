@@ -1,9 +1,13 @@
 import express from "express";
 
 const DEFAULT_NETWORK = "solana-devnet";
-// System Program address — a well-formed placeholder. The demo's price-mismatch guard rejects
-// the quote before a fee payer is ever read, so this value is never used to build a transaction.
-const DEFAULT_FEE_PAYER = "11111111111111111111111111111111111111111";
+// System Program address (32 zero bytes) — a well-formed placeholder. The demo's price-mismatch
+// guard rejects the quote before a fee payer is ever read, so this value is never used to build
+// a transaction.
+const DEFAULT_FEE_PAYER = "11111111111111111111111111111111";
+// SPL Token program address — a distinct well-formed placeholder from DEFAULT_FEE_PAYER; a real
+// vendor's payTo is unrelated to its facilitator's fee payer.
+const DEFAULT_PAY_TO = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const DEVNET_USDC_MINT = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
 const RESOURCE_PATH = "/forecast";
 const RESOURCE_DESCRIPTION = "a weather forecast";
@@ -75,7 +79,7 @@ export function createVendorApp(options: VendorOptions): express.Express {
 
 if (process.argv[1]?.endsWith("vendor.ts")) {
   const port = Number(process.env["VENDOR_PORT"] ?? 3001);
-  createVendorApp({ priceMinor: 50_000n, payTo: process.env["VENDOR_ADDRESS"] ?? DEFAULT_FEE_PAYER }).listen(
+  createVendorApp({ priceMinor: 50_000n, payTo: process.env["VENDOR_ADDRESS"] ?? DEFAULT_PAY_TO }).listen(
     port,
     () => process.stdout.write(`vendor listening on http://localhost:${port}\n`),
   );

@@ -165,4 +165,25 @@ describe("vendor server", () => {
 
     expect(signTransfer).not.toHaveBeenCalled();
   });
+
+  it("clears the price, asset, and address checks and reaches signing when the quote is within budget", async () => {
+    const app = createVendorApp({ priceMinor: 50_000n, payTo: PAY_TO });
+    const signTransfer = vi.fn().mockResolvedValue({ wireTransaction: "AQID", lastValidBlockHeight: 100n });
+
+    const settlement = settleViaFacilitator({
+      vendorUrl: VENDOR_URL,
+      approvedAmountMinor: 50_000n,
+      expectedAsset: USDC,
+      signTransfer,
+      fetchImpl: fetchImplFor(app),
+    });
+
+    // The vendor's X-PAYMENT branch is a stub that never returns a spec-conforming settlement
+    // receipt, so the call still rejects overall — just not for a price reason, which is the
+    // point: it proves the quote made it past every pre-signing check.
+    await expect(settlement).rejects.not.toBeInstanceOf(PriceMismatchError);
+    expect(signTransfer).toHaveBeenCalledWith(
+      expect.objectContaining({ payTo: PAY_TO, amountMinor: 50_000n }),
+    );
+  });
 });
