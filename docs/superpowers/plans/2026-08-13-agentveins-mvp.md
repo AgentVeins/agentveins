@@ -52,7 +52,8 @@ packages/core/
   src/checks/index.ts               CHECKS — the ordered array
   src/audit/entry.ts                canonicalize, hashEntry, signHash, verifyEntry, verifyAuditLog
   src/audit/memorySink.ts           memoryAuditSink
-  src/audit/fileSink.ts             fileAuditSink (the only file touching node:fs)
+  src/audit/fileSink.ts             fileAuditSink (touches node:fs)
+  src/audit/anchor.ts               AnchorStore impls: memoryAnchorStore, fileAnchorStore
   src/guard.ts                      createGuard, pay, freeze, unfreeze, state
   test/*.test.ts                    one test file per src module
 
@@ -986,12 +987,30 @@ git commit -m "feat(core): add hash-chained, ed25519-signed audit entries"
 ### Task 5: Audit sinks
 
 **Files:**
-- Create: `packages/core/src/audit/memorySink.ts`, `packages/core/src/audit/fileSink.ts`
-- Test: `packages/core/test/audit-sinks.test.ts`
+- Create: `packages/core/src/audit/memorySink.ts`, `packages/core/src/audit/fileSink.ts`, `packages/core/src/audit/anchor.ts`
+- Modify: `packages/core/src/types.ts` (add the `Anchor` and `AnchorStore` types)
+- Test: `packages/core/test/audit-sinks.test.ts`, `packages/core/test/anchor.test.ts`
 
 **Interfaces:**
 - Consumes: `AuditEntry`, `AuditSink` from Task 3.
-- Produces: `memoryAuditSink(seed?: AuditEntry[]): MemoryAuditSink` where `MemoryAuditSink extends AuditSink` and adds `readonly entries: AuditEntry[]`; `fileAuditSink(path: string): AuditSink`.
+- Produces: `memoryAuditSink(seed?: AuditEntry[]): MemoryAuditSink` where `MemoryAuditSink extends AuditSink` and adds `readonly entries: AuditEntry[]`; `fileAuditSink(path: string): AuditSink`; `memoryAnchorStore(seed?: Anchor | null): AnchorStore`; `fileAnchorStore(path: string): AnchorStore`.
+
+**Why the anchor exists.** Tail truncation cannot be detected from the log alone — a strict prefix of a valid chain is itself a valid chain. Because the spend counter replays from the log, deleting trailing lines silently restores budget while `verifyAuditLog` still reports OK. The anchor is the out-of-band memory that closes this: a tiny record of the log's expected head, written after every append and checked at startup. It is an integrity checkpoint, not a second copy of the spend counter — the counter still derives from the log alone.
+
+Add to `packages/core/src/types.ts`:
+
+```ts
+export interface Anchor {
+  logId: string;
+  seq: number;
+  hash: string;
+}
+
+export interface AnchorStore {
+  read(): Promise<Anchor | null>;
+  write(anchor: Anchor): Promise<void>;
+}
+```
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1118,7 +1137,7 @@ export function fileAuditSink(path: string): AuditSink {
       try {
         raw = await readFile(path, "utf8");
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        if ((error as { code?: string }).code === "ENOENT") {
           return;
         }
         throw error;
@@ -1145,11 +1164,150 @@ export function fileAuditSink(path: string): AuditSink {
 Run: `npx vitest run packages/core/test/audit-sinks.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Write the failing anchor tests**
+
+`packages/core/test/anchor.test.ts`:
+
+```ts
+import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import { fileAnchorStore, memoryAnchorStore } from "../src/audit/anchor.js";
+import type { Anchor } from "../src/types.js";
+
+const anchor: Anchor = { logId: "log-alpha", seq: 4, hash: "a".repeat(64) };
+
+describe("memoryAnchorStore", () => {
+  it("reads null before anything is written", async () => {
+    expect(await memoryAnchorStore().read()).toBeNull();
+  });
+
+  it("round-trips a written anchor", async () => {
+    const store = memoryAnchorStore();
+    await store.write(anchor);
+    expect(await store.read()).toEqual(anchor);
+  });
+
+  it("starts from a seed", async () => {
+    expect(await memoryAnchorStore(anchor).read()).toEqual(anchor);
+  });
+});
+
+describe("fileAnchorStore", () => {
+  it("reads null when the file does not exist", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "av-"));
+    expect(await fileAnchorStore(join(dir, "missing.json")).read()).toBeNull();
+  });
+
+  it("round-trips a written anchor", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "av-"));
+    const store = fileAnchorStore(join(dir, "anchor.json"));
+    await store.write(anchor);
+    expect(await store.read()).toEqual(anchor);
+  });
+
+  it("overwrites a previous anchor and leaves no temp file behind", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "av-"));
+    const store = fileAnchorStore(join(dir, "anchor.json"));
+    await store.write(anchor);
+    await store.write({ ...anchor, seq: 9 });
+
+    expect((await store.read())?.seq).toBe(9);
+    expect(await readdir(dir)).toEqual(["anchor.json"]);
+  });
+
+  it("reads null on an empty file", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "av-"));
+    const path = join(dir, "anchor.json");
+    await writeFile(path, "", "utf8");
+    expect(await fileAnchorStore(path).read()).toBeNull();
+  });
+
+  it("throws a clear error on a corrupt anchor", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "av-"));
+    const path = join(dir, "anchor.json");
+    await writeFile(path, "{not json}", "utf8");
+    await expect(fileAnchorStore(path).read()).rejects.toThrow(/corrupt/);
+  });
+
+  it("writes valid JSON on disk", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "av-"));
+    const path = join(dir, "anchor.json");
+    await fileAnchorStore(path).write(anchor);
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual(anchor);
+  });
+});
+```
+
+- [ ] **Step 6: Run the anchor tests to verify they fail**
+
+Run: `npx vitest run packages/core/test/anchor.test.ts`
+Expected: FAIL — cannot resolve `../src/audit/anchor.js`.
+
+- [ ] **Step 7: Write the anchor stores**
+
+`packages/core/src/audit/anchor.ts`:
+
+```ts
+import { readFile, rename, writeFile } from "node:fs/promises";
+import type { Anchor, AnchorStore } from "../types.js";
+
+export function memoryAnchorStore(seed: Anchor | null = null): AnchorStore {
+  let current: Anchor | null = seed;
+  return {
+    async read(): Promise<Anchor | null> {
+      return current;
+    },
+    async write(next: Anchor): Promise<void> {
+      current = next;
+    },
+  };
+}
+
+export function fileAnchorStore(path: string): AnchorStore {
+  return {
+    async read(): Promise<Anchor | null> {
+      let raw: string;
+      try {
+        raw = await readFile(path, "utf8");
+      } catch (error) {
+        if ((error as { code?: string }).code === "ENOENT") {
+          return null;
+        }
+        throw error;
+      }
+      if (raw.trim() === "") {
+        return null;
+      }
+      try {
+        return JSON.parse(raw) as Anchor;
+      } catch {
+        throw new SyntaxError(`anchor file ${path} is corrupt`);
+      }
+    },
+
+    // Write to a temp file and rename, so a crash mid-write cannot leave a half-written anchor
+    // that would strand the guard between "no anchor" and "valid anchor".
+    async write(next: Anchor): Promise<void> {
+      const temp = `${path}.tmp`;
+      await writeFile(temp, JSON.stringify(next), "utf8");
+      await rename(temp, path);
+    },
+  };
+}
+```
+
+- [ ] **Step 8: Run the anchor tests to verify they pass**
+
+Run: `npx vitest run packages/core/test/anchor.test.ts && npx vitest run && npm run build`
+Expected: PASS, full suite green, clean build.
+
+- [ ] **Step 9: Commit**
 
 ```bash
-git add packages/core/src/audit/memorySink.ts packages/core/src/audit/fileSink.ts packages/core/test/audit-sinks.test.ts
-git commit -m "feat(core): add in-memory and JSONL file audit sinks"
+git add packages/core/src/audit packages/core/src/types.ts packages/core/test/audit-sinks.test.ts packages/core/test/anchor.test.ts
+git commit -m "feat(core): add audit sinks and the out-of-band truncation anchor"
 ```
 
 ---
