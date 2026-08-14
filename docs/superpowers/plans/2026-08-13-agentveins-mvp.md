@@ -1768,7 +1768,28 @@ The three breaking API changes land here, so the README must change in the same 
 
 **Interfaces:**
 - Consumes: everything from Tasks 2–7.
-- Produces: `createGuard(options: GuardOptions): Promise<Guard>`; `interface Guard { pay(req: PayRequest): Promise<PayResult>; freeze(): Promise<void>; unfreeze(): Promise<void>; state(): SpendState }`; `interface GuardOptions { policy: Policy; adapters: WalletAdapter[]; audit: AuditSink; agent: string; signingKey: KeyObject; requirePersistedState?: boolean; now?: () => Date }`.
+- Produces: `createGuard(options: GuardOptions): Promise<Guard>`; `interface Guard { pay(req: PayRequest): Promise<PayResult>; freeze(): Promise<void>; unfreeze(): Promise<void>; state(): SpendState }`; `interface GuardOptions { policy: Policy; adapters: WalletAdapter[]; audit: AuditSink; agent: string; logId: string; signingKey: KeyObject; verifyingKey: KeyObject; anchor?: AnchorStore; requirePersistedState?: boolean; now?: () => Date }`.
+
+## The anchor invariant — the whole point of the anchor
+
+An `AnchorStore` cannot distinguish "never existed" from "deleted", "emptied", or "set to `null`" — every one of those collapses to a single signal. So the guard, not the store, has to carry the integrity rule. Get this wrong and deleting one file restores an agent's entire budget.
+
+At startup, when an `anchor` store is supplied:
+
+| Anchor | Log | Guard behavior |
+|---|---|---|
+| absent | absent or empty | **First run.** Proceed, seal and write the anchor after the first append. |
+| absent | **non-empty** | **Fail closed.** Throw at construction — the anchor was deleted or the log was substituted. Never treat this as a first run. |
+| present, signature invalid | any | **Fail closed.** Throw — the anchor was forged or corrupted. |
+| present, `logId` ≠ the guard's `logId` | any | **Fail closed.** Throw — wrong log. |
+| present, valid | log reaches the anchored `seq`/`hash` | Proceed. |
+| present, valid | log ends before it, or hash differs at that `seq` | **Fail closed.** Throw — the log was truncated. |
+
+Pass the verified anchor into `verifyAuditLog(entries, verifyingKey, { logId, anchor })` during replay so one pass covers chain integrity and truncation together.
+
+After every appended entry — payments and control events alike — seal a fresh anchor with `sealAnchor({ logId, seq, hash }, signingKey)` and write it. Write the anchor *after* the log append: an anchor ahead of the log looks like truncation, whereas an anchor behind the log is a benign stale floor.
+
+Construction failures here throw rather than returning a violation. A tampered environment is not a payment the agent can handle gracefully — it is a refusal to start.
 
 - [ ] **Step 1: Write the failing tests**
 
