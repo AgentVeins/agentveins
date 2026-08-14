@@ -2963,6 +2963,23 @@ git commit -m "feat(adapter-solana): settle through an x402 facilitator with a p
 
 ---
 
+## Amendment: what the demo vendor is for (supersedes the Task 12/13 text below)
+
+Task 11 made x402 mode spec-conforming, and that changed what the vendor server can be. The `exact` SVM scheme requires the **facilitator** to be the fee payer and to sign signature slot 0, so a local vendor that actually settles an x402 payment would need its own funded devnet keypair and a facilitator implementation. That is real scope, and putting the primary deliverable behind it is the wrong trade — CLAUDE.md is explicit that demo clarity beats feature count.
+
+So the demo splits the two jobs:
+
+- **Settlement runs in `direct` mode.** It genuinely lands USDC on devnet and confirms via `getSignatureStatuses`, which is what the Definition of Done asks for. This is the demo's default.
+- **The vendor server demonstrates the price-mismatch guard.** It serves a spec-shaped 402 that quotes **more** than the guard approved. The adapter compares the quote against the approved amount, refuses to sign, and nothing moves. That is a real security control, it needs no facilitator, and it is a better demo beat than a successful payment — it shows the guard catching a vendor trying to overcharge an agent mid-flight.
+
+Concretely, versus the text below:
+- `VendorOptions` gains nothing, but the demo constructs it with a price **above** the per-transaction limit so the mismatch fires.
+- The 402 body must include `extra: { feePayer }` alongside the existing fields, because that is what a spec-conforming quote carries and the adapter now reads it. A placeholder address is fine — the guard rejects on price before the fee payer is ever used.
+- The vendor's `X-PAYMENT` branch stays as a stub that echoes a demo signature. It is never reached by the demo's mismatch act, and its own unit tests cover it.
+- Task 13's `runDemo` defaults to `mode: "direct"` and its vendor act asserts a `failed` result carrying `price_mismatch`, rather than a settlement.
+
+Everything else in both tasks stands.
+
 ### Task 12: The demo vendor server
 
 **Files:**
