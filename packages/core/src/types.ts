@@ -81,6 +81,7 @@ export type AuditKind = "payment" | "control";
 
 export interface AuditEntry {
   id: string;
+  logId: string;
   seq: number;
   ts: string;
   kind: AuditKind;

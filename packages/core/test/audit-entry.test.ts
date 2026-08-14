@@ -1,13 +1,14 @@
-import { generateKeyPairSync } from "node:crypto";
+import { generateKeyPairSync, sign } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { hashEntry, signHash, verifyAuditLog, verifyEntry } from "../src/audit/entry.js";
 import type { AuditEntry, UnsignedAuditEntry } from "../src/types.js";
 
 const keys = generateKeyPairSync("ed25519");
 
-function unsigned(seq: number, prevHash: string, amountMinor: string): UnsignedAuditEntry {
+function unsigned(seq: number, prevHash: string, amountMinor: string, logId = "log-alpha"): UnsignedAuditEntry {
   return {
     id: `id-${seq}`,
+    logId,
     seq,
     ts: `2026-08-13T10:0${seq}:00.000Z`,
     kind: "payment",
@@ -30,11 +31,11 @@ function seal(entry: UnsignedAuditEntry): AuditEntry {
   return { ...entry, hash, sig: signHash(hash, keys.privateKey) };
 }
 
-function chain(count: number): AuditEntry[] {
+function chain(count: number, logId = "log-alpha"): AuditEntry[] {
   const entries: AuditEntry[] = [];
   let prevHash = "";
   for (let seq = 0; seq < count; seq++) {
-    const entry = seal(unsigned(seq, prevHash, "50000"));
+    const entry = seal(unsigned(seq, prevHash, "50000", logId));
     entries.push(entry);
     prevHash = entry.hash;
   }
@@ -76,6 +77,14 @@ describe("verifyEntry", () => {
   it("rejects an entry signed by a different key", () => {
     const other = generateKeyPairSync("ed25519");
     expect(verifyEntry(seal(unsigned(0, "", "50000")), other.publicKey)).toBe(false);
+  });
+
+  it("rejects a signature produced without the domain-separation prefix", () => {
+    const entry = unsigned(0, "", "50000");
+    const hash = hashEntry(entry);
+    const bareSig = sign(null, Buffer.from(hash, "utf8"), keys.privateKey).toString("base64");
+    const sealed: AuditEntry = { ...entry, hash, sig: bareSig };
+    expect(verifyEntry(sealed, keys.publicKey)).toBe(false);
   });
 });
 
@@ -131,5 +140,57 @@ describe("verifyAuditLog", () => {
     const result = await verifyAuditLog(entries, keys.publicKey);
     expect(result.ok).toBe(false);
     expect(result.failure).toEqual({ seq: 1, reason: "chain broken" });
+  });
+
+  it("rejects an entry substituted from a log with a different logId", async () => {
+    const entriesAlpha = chain(4, "log-alpha");
+    const entriesBeta = chain(4, "log-beta");
+    const mixed = [...entriesAlpha];
+    mixed[2] = entriesBeta[2]!;
+    const result = await verifyAuditLog(mixed, keys.publicKey);
+    expect(result.ok).toBe(false);
+  });
+
+  it("fails with 'log truncated' when an anchor points past the last checked entry", async () => {
+    const entries = chain(6);
+    const anchorEntry = entries[5]!;
+    const truncated = entries.slice(0, 3);
+    const result = await verifyAuditLog(truncated, keys.publicKey, {
+      anchor: { seq: anchorEntry.seq, hash: anchorEntry.hash },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.failure?.reason).toBe("log truncated");
+  });
+
+  // Documents a known limitation rather than hiding it: without an out-of-band
+  // anchor, a strict prefix of a valid chain is itself indistinguishable from a
+  // complete, untampered chain — tail truncation alone cannot be detected here.
+  it("does not detect tail truncation when no anchor is supplied", async () => {
+    const truncated = chain(6).slice(0, 3);
+    const result = await verifyAuditLog(truncated, keys.publicKey);
+    expect(result).toEqual({ ok: true, checked: 3 });
+  });
+
+  it("returns ok:false rather than throwing when a violation-bearing entry has its violation key deleted", async () => {
+    const withViolation: UnsignedAuditEntry = {
+      ...unsigned(0, "", "50000"),
+      outcome: "blocked",
+      violation: { code: "budget_exceeded", message: "over" },
+    };
+    const sealed = seal(withViolation);
+    const malformed = { ...sealed } as Partial<AuditEntry>;
+    delete malformed.violation;
+    const result = await verifyAuditLog([malformed as AuditEntry], keys.publicKey);
+    expect(result.ok).toBe(false);
+  });
+
+  it("round-trips a sealed entry carrying a non-null violation", async () => {
+    const withViolation: UnsignedAuditEntry = {
+      ...unsigned(0, "", "50000"),
+      outcome: "blocked",
+      violation: { code: "vendor_not_allowed", message: "not on allowlist", detail: { vendor: "evil.example" } },
+    };
+    const result = await verifyAuditLog([seal(withViolation)], keys.publicKey);
+    expect(result).toEqual({ ok: true, checked: 1 });
   });
 });
