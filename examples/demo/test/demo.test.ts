@@ -18,7 +18,9 @@ describe("runDemo", () => {
   });
 
   it("catches a vendor overcharge before signing anything, offline", async () => {
-    const vendorApp = createVendorApp({ priceMinor: 100_000n, payTo: "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM" });
+    // The x402 act requests exactly its guard's per-tx limit (0.10 USDC = 100_000 minor units),
+    // so the injected vendor must quote strictly more than that for the mismatch to fire.
+    const vendorApp = createVendorApp({ priceMinor: 150_000n, payTo: "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM" });
     const summary = await runDemo({ x402: true, quiet: true, fetchImpl: fetchImplFor(vendorApp, "/forecast") });
     if (summary.kind !== "x402-act") {
       throw new Error(`expected the x402 act, got ${summary.kind}`);

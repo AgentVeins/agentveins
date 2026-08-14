@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predemo": "npm run build",
     "demo": "tsx src/demo.ts",
     "vendor": "tsx src/vendor.ts",
     "build": "tsc --build",

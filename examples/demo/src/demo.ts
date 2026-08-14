@@ -1,5 +1,6 @@
 import { generateKeyPairSync } from "node:crypto";
 import type { webcrypto } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import type { Server } from "node:http";
 import {
   createGuard,
@@ -42,12 +43,18 @@ export type DemoSummary = FiveActSummary | X402ActSummary;
 
 type Logger = (line: string) => void;
 
+const MESSAGE_MAX = 200;
+
 function truncate(value: string, max = 32): string {
   return value.length > max ? `${value.slice(0, max)}…` : value;
 }
 
 function safe(value: string, max = 32): string {
   return JSON.stringify(truncate(value, max));
+}
+
+function safeDetail(detail: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(detail).map(([key, value]) => [key, truncate(value, 64)]));
 }
 
 function buildPolicy(allowedVendor: string): Policy {
@@ -59,10 +66,6 @@ function buildPolicy(allowedVendor: string): Policy {
     vendors: { mode: "allowlist", entries: [allowedVendor] },
     killSwitch: { frozen: false },
   };
-}
-
-function safeDetail(detail: Record<string, string>): Record<string, string> {
-  return Object.fromEntries(Object.entries(detail).map(([key, value]) => [key, truncate(value, 64)]));
 }
 
 function record(log: Logger, counts: { settled: number; blocked: number; failed: number }) {
@@ -80,17 +83,62 @@ function record(log: Logger, counts: { settled: number; blocked: number; failed:
       }
       log("      no chain call was made");
     } else {
-      log(`  ! ${label} failed   ${result.error.code} — ${result.error.message}`);
+      // The adapter's error can wrap an arbitrary rail exception, and its message is untrusted
+      // the same way a vendor string is — escaped and truncated before it reaches stdout.
+      log(`  ! ${label} failed   ${result.error.code} — ${safe(result.error.message, MESSAGE_MAX)}`);
     }
   };
 }
 
+// A minimal, dependency-free .env reader: KEY=VALUE lines, optional quotes, "#" comments. Only
+// fills in variables the shell has not already set, so a real environment always wins over the
+// file. Silently does nothing when the file is absent, which is every --mock run and every fresh
+// clone before an operator creates one.
+async function loadEnvFile(path = ".env"): Promise<void> {
+  let raw: string;
+  try {
+    raw = await readFile(path, "utf8");
+  } catch {
+    return;
+  }
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed === "" || trimmed.startsWith("#")) {
+      continue;
+    }
+    const eq = trimmed.indexOf("=");
+    if (eq === -1) {
+      continue;
+    }
+    const key = trimmed.slice(0, eq).trim();
+    let value = trimmed.slice(eq + 1).trim();
+    const quoted =
+      value.length >= 2 &&
+      ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")));
+    if (quoted) {
+      value = value.slice(1, -1);
+    }
+    if (process.env[key] === undefined) {
+      process.env[key] = value;
+    }
+  }
+}
+
 async function loadDirectKeypair(): Promise<webcrypto.CryptoKeyPair> {
-  const raw = process.env["SOLANA_KEYPAIR"];
-  if (raw === undefined) {
+  const path = process.env["SOLANA_KEYPAIR_PATH"];
+  if (path === undefined) {
     throw new Error(
-      "direct mode needs a funded devnet keypair: set SOLANA_KEYPAIR to a JSON array of secret " +
-        "key bytes (see .env.example), or run with --mock",
+      "direct mode needs a funded devnet keypair: set SOLANA_KEYPAIR_PATH to a Solana keypair " +
+        "JSON file (see .env.example — examples/demo/.env is loaded automatically if present), " +
+        "or run with --mock",
+    );
+  }
+  let raw: string;
+  try {
+    raw = await readFile(path, "utf8");
+  } catch (error) {
+    throw new Error(
+      `could not read the keypair file at ${path}: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
   const bytes = Uint8Array.from(JSON.parse(raw) as number[]);
@@ -115,7 +163,8 @@ async function runFiveActs(options: DemoOptions, log: Logger): Promise<FiveActSu
     const vendorAddress = process.env["VENDOR_ADDRESS"];
     if (vendorAddress === undefined) {
       throw new Error(
-        "direct mode needs a devnet USDC recipient: set VENDOR_ADDRESS (see .env.example), or run with --mock",
+        "direct mode needs a devnet USDC recipient: set VENDOR_ADDRESS (see .env.example — " +
+          "examples/demo/.env is loaded automatically if present), or run with --mock",
       );
     }
     const rpcUrl = process.env["SOLANA_RPC_URL"] ?? "https://api.devnet.solana.com";
@@ -140,7 +189,9 @@ async function runFiveActs(options: DemoOptions, log: Logger): Promise<FiveActSu
   log("\n── Act 1: the policy ─────────────────────");
   log("  per-tx limit  0.10 USDC");
   log("  daily limit   0.50 USDC");
-  log(`  allowlist     ${policy.vendors.entries.join(", ")}`);
+  // allowedVendor is operator config (VENDOR_ADDRESS or a literal), but it still comes from the
+  // environment, so it is displayed the same escaped, truncated way as any other vendor string.
+  log(`  allowlist     ${policy.vendors.entries.map((entry) => safe(entry)).join(", ")}`);
 
   log("\n── Act 2: the agent works normally ─────────────");
   for (let i = 1; i <= 10; i++) {
@@ -177,10 +228,16 @@ async function runFiveActs(options: DemoOptions, log: Logger): Promise<FiveActSu
 
   log("\n── Act 5: proof ────────────────────────");
   for (const entry of audit.entries) {
-    log(
-      `  #${entry.seq} ${entry.outcome.padEnd(7)} ${formatAmount(BigInt(entry.amountMinor))} ` +
-        `${safe(entry.vendorNormalized)} ${safe(entry.reason)}`,
-    );
+    if (entry.kind === "control") {
+      // Freeze/unfreeze entries are not payments: labeling them "settled" next to a real
+      // settlement misreads as a payment that went through.
+      log(`  #${entry.seq} control ${entry.reason}`);
+    } else {
+      log(
+        `  #${entry.seq} ${entry.outcome.padEnd(7)} ${formatAmount(BigInt(entry.amountMinor))} ` +
+          `${safe(entry.vendorNormalized)} ${safe(entry.reason)}`,
+      );
+    }
   }
 
   const verified = await verifyAuditLog(audit.entries, keys.publicKey);
@@ -206,16 +263,16 @@ async function runFiveActs(options: DemoOptions, log: Logger): Promise<FiveActSu
   };
 }
 
-// A sixth, standalone act: a vendor quotes more than the guard approved. The adapter re-checks
-// the 402 quote against the approved amount and refuses to sign, so nothing moves — a vendor
-// trying to overcharge an agent mid-flight, caught before anything was signed. This never touches
-// devnet: the price mismatch trips before the adapter needs a real signer.
+// A sixth, standalone act: the agent requests exactly the guard's per-tx limit, and the vendor
+// quotes more than both that request and the limit itself. The guard approves the request — it is
+// within every policy check — and the adapter's settleViaFacilitator is the component that
+// re-checks the vendor's 402 quote against what was actually approved and refuses to sign. This
+// never touches devnet: the price mismatch trips before the adapter needs a real signer.
 async function runX402Act(options: DemoOptions, log: Logger): Promise<X402ActSummary> {
   const keys = generateKeyPairSync("ed25519");
   const audit = memoryAuditSink();
 
-  const approvedLimit = "0.05";
-  const quotedMinor = 100_000n;
+  const quotedMinor = 150_000n; // 0.15 USDC — genuinely above the per-tx limit below
   const payTo = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM";
 
   let vendorUrl: string;
@@ -231,6 +288,14 @@ async function runX402Act(options: DemoOptions, log: Logger): Promise<X402ActSum
   }
 
   const policy = buildPolicy(new URL(vendorUrl).hostname);
+  const perTxBudget = policy.budgets.find((budget) => budget.period === "per_tx");
+  if (perTxBudget === undefined) {
+    throw new Error("buildPolicy must define a per_tx budget for this act to make sense");
+  }
+  // The agent asks for the most a single payment may be approved for under this policy, so the
+  // only reason the payment can fail is the vendor's own quote — never a policy limit.
+  const requestedAmount = perTxBudget.limit;
+
   const adapter = solanaAdapter({
     keypair: {} as webcrypto.CryptoKeyPair,
     rpcUrl: process.env["SOLANA_RPC_URL"] ?? "https://api.devnet.solana.com",
@@ -248,19 +313,20 @@ async function runX402Act(options: DemoOptions, log: Logger): Promise<X402ActSum
   });
 
   log("\n── The x402 act: a vendor tries to overcharge ────");
-  log(`  guard approves up to ${approvedLimit} USDC per transaction`);
-  log(`  the vendor quotes  ${formatAmount(quotedMinor)} USDC`);
+  log(`  guard's per-tx limit  ${perTxBudget.limit} USDC`);
+  log(`  the agent requests    ${requestedAmount} USDC`);
+  log(`  the vendor quotes     ${formatAmount(quotedMinor)} USDC`);
 
   const result = await guard.pay({
     to: vendorUrl,
-    amount: approvedLimit,
+    amount: requestedAmount,
     currency: "USDC",
     reason: "forecast query",
   });
 
   if (result.status === "failed") {
-    log(`  ! payment failed   ${result.error.code} — ${result.error.message}`);
-    log("  nothing was signed — the guard refused before any transaction was built");
+    log(`  ! payment failed   ${result.error.code} — ${safe(result.error.message, MESSAGE_MAX)}`);
+    log("  the guard approved the request — the adapter refused to sign once the vendor's quote exceeded it");
   } else if (result.status === "blocked") {
     log(`  ✗ payment BLOCKED  ${result.violation.code} — ${result.violation.message}`);
   } else {
@@ -281,11 +347,17 @@ export async function runDemo(options: DemoOptions): Promise<DemoSummary> {
 }
 
 if (process.argv[1]?.endsWith("demo.ts")) {
+  await loadEnvFile();
   const summary = await runDemo({
     mock: process.argv.includes("--mock"),
     x402: process.argv.includes("--x402"),
   });
-  if (summary.kind === "x402-act" && (summary.result.status !== "failed" || summary.result.error.code !== "price_mismatch")) {
+  if (summary.kind === "x402-act") {
+    if (summary.result.status !== "failed" || summary.result.error.code !== "price_mismatch") {
+      process.exitCode = 1;
+    }
+  } else if (!summary.verified || !summary.tamperDetected || summary.failed > 0) {
+    // The primary deliverable failing silently is worse than it failing loudly.
     process.exitCode = 1;
   }
 }

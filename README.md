@@ -70,6 +70,25 @@ await guard.freeze(); // emergency stop, instantly
 
 Integration target: under 10 minutes from `npm install` to your first governed payment. The guard, policy engine, and signed audit log are live today, and `@agentveins/adapter-solana` carries both settlement modes — a direct USDC transfer and x402. The x402 payload is checked against the reference facilitator's own verifier in the test suite; no payment has been settled against a live facilitator on devnet yet.
 
+## See it work
+
+```
+git clone <this repo> && cd agentveins
+npm install
+npm run demo -- --mock
+```
+
+`npm run demo` builds the workspace automatically the first time, so this is the whole path from
+clone to a governed agent loop — no separate build step required. It plays out five acts offline:
+an agent spending normally, hitting its per-tx and daily budgets, getting blocked, getting frozen,
+and a signed audit log that catches a tampered entry live.
+
+Drop `-- --mock` to run the same five acts as real USDC transfers on Solana devnet — set
+`SOLANA_KEYPAIR_PATH`, `VENDOR_ADDRESS`, and (optionally) `SOLANA_RPC_URL` first, either in your
+shell or in `examples/demo/.env` (copy `.env.example`; loaded automatically if present, never
+committed). `npm run demo -- --x402` runs a separate, sixth act: a vendor quotes more than the
+guard approved, and the adapter refuses to sign before anything moves.
+
 ## What AgentVeins is NOT
 
 - **Not a wallet** — it never holds funds
