@@ -32,7 +32,7 @@ Corporate card controls, for AI agents.
 ## Quickstart
 
 ```typescript
-import { createGuard, fileAuditSink, type Policy } from "@agentveins/core";
+import { createGuard, fileAnchorStore, fileAuditSink, type Policy } from "@agentveins/core";
 import { solanaAdapter } from "@agentveins/adapter-solana";
 
 const policy: Policy = {
@@ -47,8 +47,10 @@ const policy: Policy = {
 const guard = await createGuard({
   policy,
   agent: "research-agent",
+  logId: "research-agent-main", // names this agent's log; a log that claims another id is refused
   adapters: [solanaAdapter({ keypair, rpcUrl, mode: "x402" })],
   audit: fileAuditSink("./audit.jsonl"),
+  anchor: fileAnchorStore("./audit.anchor.json"), // detects a truncated or deleted log
   signingKey,
 });
 
@@ -64,7 +66,7 @@ const result = await guard.pay({
 await guard.freeze(); // emergency stop, instantly
 ```
 
-`signingKey` is an ed25519 private key you own (`generateKeyPairSync("ed25519")`); it signs audit entries and never leaves your process.
+`signingKey` is an ed25519 private key you own (`generateKeyPairSync("ed25519")`); it signs audit entries and the anchor, and never leaves your process. Keep the `anchor` store: without it a deleted `audit.jsonl` looks like a fresh start and silently restores the full budget. If the audit log cannot be written, the guard latches and blocks every payment with an `audit_unavailable` violation — a guard that cannot record does not authorize.
 
 Integration target: under 10 minutes from `npm install` to your first governed payment. The guard, policy engine, and signed audit log are live today; `@agentveins/adapter-solana` is still landing — track it on the roadmap below.
 
@@ -79,9 +81,9 @@ It sits between your agent and its money. Every wallet, rail, and framework is a
 ## How it's built
 
 - **Policy is data, not code** — JSON-serializable, versionable, diffable; dashboards can edit it without SDK changes
-- **Chain adapters** — Solana first (devnet live), Base next; policy logic never touches chain code
+- **Chain adapters** — Solana devnet first (adapter in progress), Base next; policy logic never touches chain code
 - **Blocked ≠ thrown** — structured violations so agents can retry a cheaper vendor or escalate to a human; rail errors return `failed` separately, so a network hiccup never looks like a policy denial
-- **Audit log** — append-only JSONL with hash-chained, signed entries; boring, dependency-free, verifiable. It detects edits, deletions, reordering, and forged entries outright, and detects truncation as long as the signed anchor file survives. Restoring an older matching snapshot of *both* the log and its anchor is not detected — closing that needs append-only or remote storage, which is post-MVP.
+- **Audit log** — append-only JSONL with hash-chained, signed entries; boring, dependency-free, verifiable. Configured as in the quickstart — log plus anchor — it detects edits, reordering, forged entries, and a log swapped in from another agent outright, and it detects truncation or deletion as long as the signed anchor survives. Two limits stated plainly: drop the `anchor` and truncation stops being detectable; and restoring an older matching snapshot of *both* files is not detected either way — closing that needs append-only or remote storage, which is post-MVP.
 
 ## Roadmap
 

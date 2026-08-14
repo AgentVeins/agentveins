@@ -26,7 +26,8 @@ export type ViolationCode =
   | "kill_switch"
   | "vendor_not_allowed"
   | "budget_exceeded"
-  | "invalid_request";
+  | "invalid_request"
+  | "audit_unavailable";
 
 export interface Violation {
   code: ViolationCode;

@@ -16,8 +16,8 @@ export interface GuardOptions {
   adapters: WalletAdapter[];
   audit: AuditSink;
   agent: string;
+  logId: string;
   signingKey: KeyObject;
-  logId?: string;
   verifyingKey?: KeyObject;
   anchor?: AnchorStore;
   requirePersistedState?: boolean;
@@ -42,7 +42,16 @@ interface WriteInput {
   txSig: string | null;
   rail: string | null;
   ts: Date;
+  applyWhenUnrecorded: boolean;
 }
+
+interface WriteOutcome {
+  id: string;
+  recorded: boolean;
+}
+
+const AUDIT_UNAVAILABLE_MESSAGE =
+  "the audit log cannot be written, so no payment can be authorized";
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -74,14 +83,20 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
   if (typeof options.agent !== "string" || options.agent.trim() === "") {
     throw new RangeError("createGuard requires a non-empty agent name");
   }
-  if (options.logId !== undefined && (typeof options.logId !== "string" || options.logId.trim() === "")) {
-    throw new RangeError("logId must be a non-empty string");
+  if (typeof options.logId !== "string" || options.logId.trim() === "") {
+    throw new RangeError("createGuard requires a non-empty logId that names this agent's audit log");
   }
   if (options.audit === null || typeof options.audit !== "object" || typeof options.audit.append !== "function") {
     throw new TypeError("createGuard requires an audit sink with an append function");
   }
+  if (options.signingKey === null || typeof options.signingKey !== "object" || options.signingKey.type !== "private") {
+    throw new TypeError("signingKey must be a private KeyObject; audit entries cannot be signed without one");
+  }
+  if (options.verifyingKey !== undefined && options.verifyingKey.type !== "public") {
+    throw new TypeError("verifyingKey must be a public KeyObject");
+  }
 
-  const { policy, adapters, audit, agent, signingKey } = options;
+  const { policy, adapters, audit, agent, logId, signingKey } = options;
   const anchorStore = options.anchor;
   const verifyingKey = options.verifyingKey ?? createPublicKey(signingKey);
   const clock = options.now ?? (() => new Date());
@@ -94,32 +109,33 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
     throw new RangeError("an anchor store needs an audit sink that can replay entries, or truncation goes undetected");
   }
 
-  let observedLogId: string | undefined;
-  async function* observing(entries: AsyncIterable<AuditEntry>): AsyncIterable<AuditEntry> {
+  // The log names the agent it governs: replaying another agent's log would import its spend
+  // and its frozen state. The foreign name never travels into the message.
+  async function* enforceAgent(entries: AsyncIterable<AuditEntry>): AsyncIterable<AuditEntry> {
     for await (const entry of entries) {
-      observedLogId ??= entry.logId;
+      if (entry.agent !== agent) {
+        throw new Error(`the audit log entry at seq ${entry.seq} belongs to a different agent; refusing to start`);
+      }
       yield entry;
     }
   }
 
   let state: SpendState;
-  let anchorRecord: Anchor | null = null;
   if (readLog === undefined) {
     state = emptyState(policy);
   } else {
-    anchorRecord = anchorStore === undefined ? null : await anchorStore.read();
+    const anchorRecord: Anchor | null = anchorStore === undefined ? null : await anchorStore.read();
     if (anchorRecord !== null) {
       if (!verifyAnchor(anchorRecord, verifyingKey)) {
         throw new Error("the audit anchor carries an invalid signature; refusing to start");
       }
-      if (options.logId !== undefined && anchorRecord.logId !== options.logId) {
-        throw new Error(`the audit anchor belongs to log ${anchorRecord.logId}, not ${options.logId}; refusing to start`);
+      if (anchorRecord.logId !== logId) {
+        throw new Error(`the audit anchor belongs to log ${anchorRecord.logId}, not ${logId}; refusing to start`);
       }
     }
 
-    const expectedLogId = options.logId ?? anchorRecord?.logId;
-    const verification = await verifyAuditLog(observing(readLog()), verifyingKey, {
-      logId: expectedLogId,
+    const verification = await verifyAuditLog(enforceAgent(readLog()), verifyingKey, {
+      logId,
       anchor: anchorRecord ?? undefined,
     });
     if (!verification.ok) {
@@ -141,7 +157,9 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
   // logged unfreeze, and a policy that says unfrozen cannot clear a freeze an operator logged.
   state = { ...state, frozen: policy.killSwitch.frozen || state.frozen };
 
-  const logId = options.logId ?? anchorRecord?.logId ?? observedLogId ?? randomUUID();
+  // A guard that cannot record cannot authorize: once an append or an anchor write fails, the
+  // latch stays closed and every later payment is blocked before it reaches an adapter.
+  let auditBroken = false;
 
   // Payments are serialized so two concurrent calls cannot both pass the same budget check.
   let queue: Promise<unknown> = Promise.resolve();
@@ -154,7 +172,9 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
     return run;
   }
 
-  async function write(input: WriteInput): Promise<string> {
+  // Recording an attempt never throws; it latches instead, so a sink failure can neither
+  // reject a payment that settled nor relabel it.
+  async function write(input: WriteInput): Promise<WriteOutcome> {
     const unsignedEntry: UnsignedAuditEntry = {
       id: randomUUID(),
       logId,
@@ -176,14 +196,34 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
     const hash = hashEntry(unsignedEntry);
     const entry: AuditEntry = { ...unsignedEntry, hash, sig: signHash(hash, signingKey) };
 
-    await audit.append(entry);
+    // Appending onto an already-broken chain would corrupt verification for good, so a latched
+    // guard records nothing further and only carries the effect in memory.
+    if (!auditBroken) {
+      try {
+        await audit.append(entry);
+      } catch {
+        auditBroken = true;
+      }
+    }
+
+    if (auditBroken) {
+      if (input.applyWhenUnrecorded) {
+        state = applyEntry(state, entry);
+      }
+      return { id: entry.id, recorded: false };
+    }
+
     state = applyEntry(state, entry);
     // The anchor lands after the append: an anchor ahead of the log reads as truncation,
     // whereas an anchor behind it is a benign stale floor.
     if (anchorStore !== undefined) {
-      await anchorStore.write(sealAnchor({ logId, seq: entry.seq, hash: entry.hash }, signingKey));
+      try {
+        await anchorStore.write(sealAnchor({ logId, seq: entry.seq, hash: entry.hash }, signingKey));
+      } catch {
+        auditBroken = true;
+      }
     }
-    return entry.id;
+    return { id: entry.id, recorded: true };
   }
 
   function pickAdapter(via: string | undefined): WalletAdapter {
@@ -203,6 +243,15 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
   }
 
   async function runPayment(req: PayRequest): Promise<PayResult> {
+    if (auditBroken) {
+      // No audit id: the attempt could not be recorded, which is exactly why it was blocked.
+      return {
+        status: "blocked",
+        violation: { code: "audit_unavailable", message: AUDIT_UNAVAILABLE_MESSAGE },
+        auditId: "",
+      };
+    }
+
     const ts = readClock();
     // A broken clock cannot block the audit write, so the entry falls back to system time
     // while the request itself fails soft below.
@@ -230,7 +279,7 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
       adapter = pickAdapter(req.via);
     } catch (error) {
       const violation: Violation = { code: "invalid_request", message: messageOf(error) };
-      const auditId = await write({
+      const outcome = await write({
         kind: "payment",
         vendor: typeof fields.to === "string" ? fields.to : "",
         vendorNormalized: "",
@@ -241,8 +290,9 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
         txSig: null,
         rail: null,
         ts: auditTs,
+        applyWhenUnrecorded: true,
       });
-      return { status: "blocked", violation, auditId };
+      return { status: "blocked", violation, auditId: outcome.id };
     }
 
     const ctx = {
@@ -269,43 +319,57 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
     }
 
     if (violation !== null) {
-      const auditId = await write({
+      const outcome = await write({
         kind: "payment", vendor: req.to, vendorNormalized, amountMinor,
         reason: req.reason, outcome: "blocked", violation,
-        txSig: null, rail: adapter.name, ts: auditTs,
+        txSig: null, rail: adapter.name, ts: auditTs, applyWhenUnrecorded: true,
       });
-      return { status: "blocked", violation, auditId };
+      return { status: "blocked", violation, auditId: outcome.id };
     }
 
+    // The rail call owns this try and nothing else: a failure to record the result must never
+    // be reported as a failure to pay.
+    let txSig: string;
+    let rail: string;
     try {
       const receipt = await adapter.execute({ to: req.to, amountMinor, reason: req.reason });
       if (receipt === null || typeof receipt !== "object" || typeof receipt.txSig !== "string" || receipt.txSig === "") {
         throw new TypeError(`adapter ${adapter.name} returned no transaction signature`);
       }
-      const auditId = await write({
-        kind: "payment", vendor: req.to, vendorNormalized, amountMinor,
-        reason: req.reason, outcome: "settled", violation: null,
-        txSig: receipt.txSig, rail: typeof receipt.rail === "string" ? receipt.rail : adapter.name,
-        ts: auditTs,
-      });
-      return { status: "settled", txSig: receipt.txSig, auditId };
+      txSig = receipt.txSig;
+      rail = typeof receipt.rail === "string" ? receipt.rail : adapter.name;
     } catch (error) {
       const paymentError = toPaymentError(error);
-      const auditId = await write({
+      const outcome = await write({
         kind: "payment", vendor: req.to, vendorNormalized, amountMinor,
         reason: req.reason, outcome: "failed", violation: null,
-        txSig: null, rail: adapter.name, ts: auditTs,
+        txSig: null, rail: adapter.name, ts: auditTs, applyWhenUnrecorded: true,
       });
-      return { status: "failed", error: paymentError, auditId };
+      return { status: "failed", error: paymentError, auditId: outcome.id };
     }
+
+    // The money moved. Recording it can fail and latch the guard, but the caller still learns
+    // the payment settled — an agent that never hears about a settlement retries it.
+    const settlement = await write({
+      kind: "payment", vendor: req.to, vendorNormalized, amountMinor,
+      reason: req.reason, outcome: "settled", violation: null,
+      txSig, rail, ts: auditTs, applyWhenUnrecorded: true,
+    });
+    return { status: "settled", txSig, auditId: settlement.id };
   }
 
   async function setFrozen(action: "freeze" | "unfreeze"): Promise<void> {
+    if (action === "unfreeze" && policy.killSwitch.frozen) {
+      throw new Error("the policy freezes this agent; change policy.killSwitch.frozen to lift it");
+    }
     const ts = readClock();
+    // A freeze that cannot be recorded still takes effect, and an unfreeze that cannot be
+    // recorded does not: the kill switch always fails toward the more restrictive state.
     await write({
       kind: "control", vendor: "", vendorNormalized: "", amountMinor: 0n,
       reason: action, outcome: "settled", violation: null,
       txSig: null, rail: null, ts: Number.isNaN(ts.getTime()) ? new Date() : ts,
+      applyWhenUnrecorded: action === "freeze",
     });
   }
 
