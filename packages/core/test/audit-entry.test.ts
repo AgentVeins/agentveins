@@ -1,7 +1,7 @@
 import { generateKeyPairSync, sign } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { hashEntry, signHash, verifyAuditLog, verifyEntry } from "../src/audit/entry.js";
-import type { AuditEntry, UnsignedAuditEntry } from "../src/types.js";
+import type { AuditEntry, UnsignedAuditEntry, Violation } from "../src/types.js";
 
 const keys = generateKeyPairSync("ed25519");
 
@@ -142,13 +142,18 @@ describe("verifyAuditLog", () => {
     expect(result.failure).toEqual({ seq: 1, reason: "chain broken" });
   });
 
-  it("rejects an entry substituted from a log with a different logId", async () => {
-    const entriesAlpha = chain(4, "log-alpha");
-    const entriesBeta = chain(4, "log-beta");
-    const mixed = [...entriesAlpha];
-    mixed[2] = entriesBeta[2]!;
+  it("detects a logId change mid-chain even when prevHash and signatures stay valid", async () => {
+    const alphaPart = chain(2, "log-alpha");
+    const betaEntry = seal(unsigned(2, alphaPart[1]!.hash, "50000", "log-beta"));
+    const mixed = [...alphaPart, betaEntry];
     const result = await verifyAuditLog(mixed, keys.publicKey);
-    expect(result.ok).toBe(false);
+    expect(result).toEqual({ ok: false, checked: 2, failure: { seq: 2, reason: "log identity changed" } });
+  });
+
+  it("rejects a whole-log substitution when options.logId names a different log", async () => {
+    const betaChain = chain(3, "log-beta");
+    const result = await verifyAuditLog(betaChain, keys.publicKey, { logId: "log-alpha" });
+    expect(result).toEqual({ ok: false, checked: 0, failure: { seq: 0, reason: "log identity mismatch" } });
   });
 
   it("fails with 'log truncated' when an anchor points past the last checked entry", async () => {
@@ -162,6 +167,23 @@ describe("verifyAuditLog", () => {
     expect(result.failure?.reason).toBe("log truncated");
   });
 
+  it("treats the anchor as a floor: a log longer than the anchored seq still verifies", async () => {
+    const entries = chain(6);
+    const anchorEntry = entries[3]!;
+    const result = await verifyAuditLog(entries, keys.publicKey, {
+      anchor: { seq: anchorEntry.seq, hash: anchorEntry.hash },
+    });
+    expect(result).toEqual({ ok: true, checked: 6 });
+  });
+
+  it("fails with 'log truncated' when the anchored seq is present but its hash differs", async () => {
+    const entries = chain(4);
+    const result = await verifyAuditLog(entries, keys.publicKey, {
+      anchor: { seq: 2, hash: "0".repeat(64) },
+    });
+    expect(result).toEqual({ ok: false, checked: 2, failure: { seq: 2, reason: "log truncated" } });
+  });
+
   // Documents a known limitation rather than hiding it: without an out-of-band
   // anchor, a strict prefix of a valid chain is itself indistinguishable from a
   // complete, untampered chain — tail truncation alone cannot be detected here.
@@ -171,7 +193,7 @@ describe("verifyAuditLog", () => {
     expect(result).toEqual({ ok: true, checked: 3 });
   });
 
-  it("returns ok:false rather than throwing when a violation-bearing entry has its violation key deleted", async () => {
+  it("detects a deleted violation key as a hash mismatch (content modified), not a throw", async () => {
     const withViolation: UnsignedAuditEntry = {
       ...unsigned(0, "", "50000"),
       outcome: "blocked",
@@ -181,7 +203,27 @@ describe("verifyAuditLog", () => {
     const malformed = { ...sealed } as Partial<AuditEntry>;
     delete malformed.violation;
     const result = await verifyAuditLog([malformed as AuditEntry], keys.publicKey);
-    expect(result.ok).toBe(false);
+    expect(result).toEqual({ ok: false, checked: 0, failure: { seq: 0, reason: "content modified" } });
+  });
+
+  it("returns ok:false with reason 'malformed entry' when canonicalization throws, without throwing itself", async () => {
+    const throwingViolation: Violation = {
+      code: "budget_exceeded",
+      message: "boom",
+      get detail(): Record<string, string> {
+        throw new Error("boom");
+      },
+    };
+    const malformedEntry: AuditEntry = {
+      ...unsigned(0, "", "50000"),
+      outcome: "blocked",
+      violation: throwingViolation,
+      hash: "irrelevant-hash",
+      sig: "irrelevant-sig",
+    };
+    const result = await verifyAuditLog([malformedEntry], keys.publicKey);
+    expect(result).toEqual({ ok: false, checked: 0, failure: { seq: 0, reason: "malformed entry" } });
+    expect(verifyEntry(malformedEntry, keys.publicKey)).toBe(false);
   });
 
   it("round-trips a sealed entry carrying a non-null violation", async () => {
