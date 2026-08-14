@@ -29,6 +29,7 @@ export interface SignedTransfer {
   signedTransaction: Uint8Array;
   wireTransaction: string;
   signature: string;
+  lastValidBlockHeight: bigint;
 }
 
 export async function buildSignedTransfer(
@@ -63,12 +64,12 @@ export async function buildSignedTransfer(
     decimals: deps.decimals,
   });
 
-  const { value: blockhash } = await rpc.getLatestBlockhash().send();
+  const { value: lifetime } = await rpc.getLatestBlockhash().send();
 
   const message = pipe(
     createTransactionMessage({ version: 0 }),
     (m) => setTransactionMessageFeePayerSigner(deps.signer, m),
-    (m) => setTransactionMessageLifetimeUsingBlockhash(blockhash, m),
+    (m) => setTransactionMessageLifetimeUsingBlockhash(lifetime, m),
     (m) => appendTransactionMessageInstruction(instruction, m),
   );
 
@@ -80,5 +81,6 @@ export async function buildSignedTransfer(
     signedTransaction: new Uint8Array(getTransactionEncoder().encode(signed)),
     wireTransaction: getBase64EncodedWireTransaction(signed),
     signature: getSignatureFromTransaction(signed),
+    lastValidBlockHeight: lifetime.lastValidBlockHeight,
   };
 }
