@@ -1770,6 +1770,24 @@ The three breaking API changes land here, so the README must change in the same 
 - Consumes: everything from Tasks 2–7.
 - Produces: `createGuard(options: GuardOptions): Promise<Guard>`; `interface Guard { pay(req: PayRequest): Promise<PayResult>; freeze(): Promise<void>; unfreeze(): Promise<void>; state(): SpendState }`; `interface GuardOptions { policy: Policy; adapters: WalletAdapter[]; audit: AuditSink; agent: string; logId: string; signingKey: KeyObject; verifyingKey: KeyObject; anchor?: AnchorStore; requirePersistedState?: boolean; now?: () => Date }`.
 
+## Four hardening requirements the checks layer cannot own
+
+Reviews of Tasks 6 and 7 surfaced these; each belongs to the guard, not to a pure check function.
+
+**1. Freezing is sticky from either source.** `killSwitchCheck` reads only `state.frozen`, and `replay` lets a `control`/`unfreeze` entry clear it. So an operator who unfroze via the log and then sets `killSwitch: { frozen: true }` in the policy file currently gets payments flowing — verified. After replay, seed frozen state as the union, not the override:
+
+```ts
+state = { ...state, frozen: policy.killSwitch.frozen || state.frozen };
+```
+
+The earlier rule still holds — a policy saying `frozen: false` must never silently un-freeze an agent an operator froze via the log. Both directions resolve toward *more* restrictive.
+
+**2. A check that throws becomes `invalid_request`, never an exception.** `budgetCheck` calls `parseAmount(budget.limit)` on every evaluation and throws `RangeError` on a malformed limit; `spentInWindow` throws on an invalid `ctx.now`. `validatePolicy` catches malformed limits at construction, but it neither freezes nor clones the policy, so post-construction mutation reaches payment time. Wrap the `CHECKS` loop in try/catch and map any escape to a `Violation` with code `invalid_request`. Payment-time failures return violations; they do not throw.
+
+**3. Reject non-positive amounts at the boundary.** The enforcement layer has no floor — a negative `amountMinor` passes every budget. `parseAmount` rejects negative *strings* today, so this is unreachable through the public API, but the guard should assert `amountMinor > 0n` and return `invalid_request` rather than depend on that.
+
+**4. Replay only a verified log.** `replay` performs no verification and says so in its own doc comment. The guard must run `verifyAuditLog(entries, verifyingKey, { logId, anchor })` first and replay only on `ok: true`; a failed verification is a construction-time throw, not a violation.
+
 ## The anchor invariant — the whole point of the anchor
 
 An `AnchorStore` cannot distinguish "never existed" from "deleted", "emptied", or "set to `null`" — every one of those collapses to a single signal. So the guard, not the store, has to carry the integrity rule. Get this wrong and deleting one file restores an agent's entire budget.
