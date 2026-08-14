@@ -1,7 +1,7 @@
 import { generateKeyPairSync, sign } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { hashEntry, signHash, verifyAuditLog, verifyEntry } from "../src/audit/entry.js";
-import type { AuditEntry, UnsignedAuditEntry, Violation } from "../src/types.js";
+import type { AuditEntry, PaymentError, UnsignedAuditEntry, Violation } from "../src/types.js";
 
 const keys = generateKeyPairSync("ed25519");
 
@@ -66,6 +66,52 @@ describe("hashEntry", () => {
 
   it("changes when any signed field changes", () => {
     expect(hashEntry(unsigned(0, "", "50000"))).not.toBe(hashEntry(unsigned(0, "", "50001")));
+  });
+});
+
+describe("hashEntry error field", () => {
+  function withError(error: PaymentError | null | undefined): UnsignedAuditEntry {
+    return { ...unsigned(0, "", "50000"), outcome: "failed", error };
+  }
+
+  it("changes when error.code changes", () => {
+    const a = withError({ code: "timeout", message: "no response", txSig: "sig-a" });
+    const b = withError({ code: "adapter_error", message: "no response", txSig: "sig-a" });
+    expect(hashEntry(a)).not.toBe(hashEntry(b));
+  });
+
+  it("changes when error.message changes", () => {
+    const a = withError({ code: "timeout", message: "no response", txSig: "sig-a" });
+    const b = withError({ code: "timeout", message: "gave up waiting", txSig: "sig-a" });
+    expect(hashEntry(a)).not.toBe(hashEntry(b));
+  });
+
+  it("changes when error.txSig changes", () => {
+    const a = withError({ code: "timeout", message: "no response", txSig: "sig-a" });
+    const b = withError({ code: "timeout", message: "no response", txSig: "sig-b" });
+    expect(hashEntry(a)).not.toBe(hashEntry(b));
+  });
+
+  it("produces the same hash whether error is absent, undefined, or null", () => {
+    const failedBase = { ...unsigned(0, "", "50000"), outcome: "failed" } as UnsignedAuditEntry;
+    const { error: _omit, ...withoutErrorField } = { ...failedBase, error: undefined };
+    const absent = withoutErrorField as UnsignedAuditEntry;
+    const explicitUndefined = withError(undefined);
+    const explicitNull = withError(null);
+    expect(hashEntry(absent)).toBe(hashEntry(explicitUndefined));
+    expect(hashEntry(explicitUndefined)).toBe(hashEntry(explicitNull));
+  });
+
+  it("treats an omitted error.txSig the same as an explicit null", () => {
+    const omitted = withError({ code: "timeout", message: "no response" });
+    const explicitNull = withError({ code: "timeout", message: "no response", txSig: null } as unknown as PaymentError);
+    expect(hashEntry(omitted)).toBe(hashEntry(explicitNull));
+  });
+
+  it("is stable regardless of error key insertion order", () => {
+    const error: PaymentError = { code: "timeout", message: "no response", txSig: "sig-a" };
+    const reordered = Object.fromEntries(Object.entries(error).reverse()) as unknown as PaymentError;
+    expect(hashEntry(withError(error))).toBe(hashEntry(withError(reordered)));
   });
 });
 
@@ -224,6 +270,53 @@ describe("verifyAuditLog", () => {
     const result = await verifyAuditLog([malformedEntry], keys.publicKey);
     expect(result).toEqual({ ok: false, checked: 0, failure: { seq: 0, reason: "malformed entry" } });
     expect(verifyEntry(malformedEntry, keys.publicKey)).toBe(false);
+  });
+
+  it("detects a deleted error field as a hash mismatch (content modified), not a throw", async () => {
+    const withError: UnsignedAuditEntry = {
+      ...unsigned(0, "", "50000"),
+      outcome: "failed",
+      error: { code: "timeout", message: "no response", txSig: "sig-a" },
+    };
+    const sealed = seal(withError);
+    const malformed = { ...sealed } as Partial<AuditEntry>;
+    delete malformed.error;
+    const result = await verifyAuditLog([malformed as AuditEntry], keys.publicKey);
+    expect(result).toEqual({ ok: false, checked: 0, failure: { seq: 0, reason: "content modified" } });
+  });
+
+  it("detects a nulled error field as a hash mismatch (content modified)", async () => {
+    const withError: UnsignedAuditEntry = {
+      ...unsigned(0, "", "50000"),
+      outcome: "failed",
+      error: { code: "timeout", message: "no response", txSig: "sig-a" },
+    };
+    const sealed = seal(withError);
+    const malformed: AuditEntry = { ...sealed, error: null };
+    const result = await verifyAuditLog([malformed], keys.publicKey);
+    expect(result).toEqual({ ok: false, checked: 0, failure: { seq: 0, reason: "content modified" } });
+  });
+
+  it("detects an altered error field as a hash mismatch (content modified)", async () => {
+    const withError: UnsignedAuditEntry = {
+      ...unsigned(0, "", "50000"),
+      outcome: "failed",
+      error: { code: "timeout", message: "no response", txSig: "sig-a" },
+    };
+    const sealed = seal(withError);
+    const malformed: AuditEntry = { ...sealed, error: { ...sealed.error!, message: "everything is fine" } };
+    const result = await verifyAuditLog([malformed], keys.publicKey);
+    expect(result).toEqual({ ok: false, checked: 0, failure: { seq: 0, reason: "content modified" } });
+  });
+
+  it("round-trips a sealed entry carrying a non-null error", async () => {
+    const withError: UnsignedAuditEntry = {
+      ...unsigned(0, "", "50000"),
+      outcome: "failed",
+      error: { code: "timeout", message: "no response", txSig: "sig-a" },
+    };
+    const result = await verifyAuditLog([seal(withError)], keys.publicKey);
+    expect(result).toEqual({ ok: true, checked: 1 });
   });
 
   it("round-trips a sealed entry carrying a non-null violation", async () => {

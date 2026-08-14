@@ -239,7 +239,7 @@ async function runFiveActs(options: DemoOptions, log: Logger): Promise<FiveActSu
       log(`  #${entry.seq} control ${entry.reason}`);
     } else {
       log(
-        `  #${entry.seq} ${entry.outcome.padEnd(7)} ${formatAmount(BigInt(entry.amountMinor))} ` +
+        `  #${entry.seq} ${entry.outcome.padEnd(9)} ${formatAmount(BigInt(entry.amountMinor))} ` +
           `${safe(entry.vendorNormalized)} ${safe(entry.reason)}`,
       );
     }
