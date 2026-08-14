@@ -1,0 +1,11 @@
+{
+  "name": "@agentveins/adapter-base",
+  "version": "0.0.1",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist"],
+  "dependencies": { "@agentveins/core": "0.0.1" },
+  "scripts": { "build": "tsc --build", "typecheck": "tsc -p tsconfig.test.json" }
+}

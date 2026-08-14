@@ -1,5 +1,6 @@
 export const VERSION = "0.0.1";
 
+export { NotImplementedError } from "./errors.js";
 export { createGuard, type Guard, type GuardOptions } from "./guard.js";
 export { validatePolicy } from "./policy.js";
 export { normalizeVendor } from "./vendor.js";
