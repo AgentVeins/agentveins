@@ -1,5 +1,5 @@
 import { createHash, sign, verify, type KeyObject } from "node:crypto";
-import type { AuditEntry, UnsignedAuditEntry, Violation } from "../types.js";
+import type { AuditEntry, PaymentError, UnsignedAuditEntry, Violation } from "../types.js";
 
 const SIGNED_FIELDS = [
   "id", "logId", "seq", "ts", "kind", "agent", "vendor", "vendorNormalized", "rail",
@@ -29,9 +29,16 @@ function canonicalViolation(violation: Violation | null): unknown {
   return [violation.code, violation.message, detail];
 }
 
+function canonicalError(error: PaymentError | null | undefined): unknown {
+  if (error == null) {
+    return null;
+  }
+  return [error.code, error.message, error.txSig ?? null];
+}
+
 export function canonicalize(entry: UnsignedAuditEntry): string {
   const ordered = SIGNED_FIELDS.map((field) => entry[field]);
-  return JSON.stringify([...ordered, canonicalViolation(entry.violation)]);
+  return JSON.stringify([...ordered, canonicalViolation(entry.violation), canonicalError(entry.error)]);
 }
 
 export function hashEntry(entry: UnsignedAuditEntry): string {

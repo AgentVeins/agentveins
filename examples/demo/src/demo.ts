@@ -23,6 +23,8 @@ export interface DemoOptions {
   quiet?: boolean;
   /** Test-only seam: routes the x402 act's vendor call through this instead of a real listener. */
   fetchImpl?: typeof fetch;
+  /** Test-only seam: captures the transcript instead of writing it to stdout. */
+  logImpl?: (line: string) => void;
 }
 
 export interface FiveActSummary {
@@ -74,7 +76,9 @@ function record(log: Logger, counts: { settled: number; blocked: number; failed:
     if (result.status === "settled") {
       log(`  ✓ ${label} settled  tx=${result.txSig}`);
     } else if (result.status === "blocked") {
-      log(`  ✗ ${label} BLOCKED  ${result.violation.code} — ${result.violation.message}`);
+      // The message can quote a rule the caller broke; the guard keeps caller-supplied values
+      // out of it, and this escapes and truncates it anyway rather than trusting that twice.
+      log(`  ✗ ${label} BLOCKED  ${result.violation.code} — ${safe(result.violation.message, MESSAGE_MAX)}`);
       if (result.violation.detail !== undefined) {
         // The violation's detail can carry the raw vendor string an agent requested, which is
         // untrusted and unbounded in length; it is escaped and truncated the same way Act 5's
@@ -329,7 +333,7 @@ async function runX402Act(options: DemoOptions, log: Logger): Promise<X402ActSum
     log(`  ! payment failed   ${result.error.code} — ${safe(result.error.message, MESSAGE_MAX)}`);
     log("  the guard approved the request — the adapter refused to sign once the vendor's quote exceeded it");
   } else if (result.status === "blocked") {
-    log(`  ✗ payment BLOCKED  ${result.violation.code} — ${result.violation.message}`);
+    log(`  ✗ payment BLOCKED  ${result.violation.code} — ${safe(result.violation.message, MESSAGE_MAX)}`);
   } else {
     log(`  ✓ payment settled  tx=${result.txSig}`);
   }
@@ -340,7 +344,8 @@ async function runX402Act(options: DemoOptions, log: Logger): Promise<X402ActSum
 }
 
 export async function runDemo(options: DemoOptions): Promise<DemoSummary> {
-  const log: Logger = options.quiet === true ? () => {} : (line) => process.stdout.write(`${line}\n`);
+  const log: Logger =
+    options.logImpl ?? (options.quiet === true ? () => {} : (line) => process.stdout.write(`${line}\n`));
   if (options.x402 === true) {
     return runX402Act(options, log);
   }

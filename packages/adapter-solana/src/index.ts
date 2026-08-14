@@ -1,7 +1,12 @@
 import type { webcrypto } from "node:crypto";
 import type { SettlementReceipt, SettlementRequest, WalletAdapter } from "@agentveins/core";
 import { createSignerFromKeyPair } from "@solana/kit";
-import { confirmSignature, createDirectRail } from "./direct.js";
+import {
+  DEFAULT_CONFIRM_MAX_ATTEMPTS,
+  DEFAULT_CONFIRM_TIMEOUT_MS,
+  confirmSignature,
+  createDirectRail,
+} from "./direct.js";
 import type { DirectRail, SignatureStatus } from "./direct.js";
 import { buildSignedTransfer, buildX402Transfer } from "./transfer.js";
 import type { SignedTransfer, TransferDeps, X402Transfer, X402TransferRequest } from "./transfer.js";
@@ -18,6 +23,10 @@ export interface SolanaAdapterConfig {
   usdcMint?: string;
   pollIntervalMs?: number;
   timeoutMs?: number;
+  /** Wall-clock ceiling on confirming one direct-mode transfer. Defaults to 90s. */
+  confirmTimeoutMs?: number;
+  /** Ceiling on status checks while confirming one direct-mode transfer. Defaults to 300. */
+  confirmMaxAttempts?: number;
   fetchImpl?: typeof fetch;
   buildSignedTransfer?: (to: string, amountMinor: bigint) => Promise<SignedTransfer>;
   buildX402Transfer?: (request: X402TransferRequest) => Promise<X402Transfer>;
@@ -82,7 +91,13 @@ export function solanaAdapter(config: SolanaAdapterConfig): WalletAdapter {
       const signed = await build(req.to, req.amountMinor);
       await send(signed.wireTransaction);
       await confirmSignature(
-        { getSignatureStatus, getBlockHeight, pollIntervalMs },
+        {
+          getSignatureStatus,
+          getBlockHeight,
+          pollIntervalMs,
+          timeoutMs: config.confirmTimeoutMs ?? DEFAULT_CONFIRM_TIMEOUT_MS,
+          maxAttempts: config.confirmMaxAttempts ?? DEFAULT_CONFIRM_MAX_ATTEMPTS,
+        },
         signed.signature,
         signed.lastValidBlockHeight,
       );
@@ -99,7 +114,14 @@ export type {
   X402Transfer,
   X402TransferRequest,
 } from "./transfer.js";
-export { TransactionNotConfirmedError } from "./direct.js";
+export {
+  ConfirmationTimeoutError,
+  DEFAULT_CONFIRM_MAX_ATTEMPTS,
+  DEFAULT_CONFIRM_TIMEOUT_MS,
+  TransactionNotConfirmedError,
+  confirmSignature,
+} from "./direct.js";
+export type { ConfirmDeps } from "./direct.js";
 export { PriceMismatchError, settleViaFacilitator } from "./x402.js";
 export type { FacilitatorInput } from "./x402.js";
 export type { ConfirmationLevel, SignatureStatus } from "./direct.js";

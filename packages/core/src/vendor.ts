@@ -1,4 +1,5 @@
 import { URL } from "node:url";
+import { InvalidRequestError } from "./errors.js";
 
 const HTTP_SCHEME = /^https?:/i;
 
@@ -8,7 +9,7 @@ export function normalizeVendor(to: string): string {
   }
   const trimmed = to.trim();
   if (trimmed === "") {
-    throw new RangeError("vendor must not be empty");
+    throw new InvalidRequestError("vendor must not be empty");
   }
   if (!HTTP_SCHEME.test(trimmed)) {
     // http(s) auto-inserts "//" as a special scheme, but other schemes (solana:...) and
@@ -20,10 +21,10 @@ export function normalizeVendor(to: string): string {
   try {
     url = new URL(trimmed);
   } catch {
-    throw new RangeError(`vendor is not a valid URL: ${trimmed}`);
+    throw new InvalidRequestError("vendor is not a valid URL", { vendor: trimmed });
   }
   if (url.hostname === "") {
-    throw new RangeError(`vendor URL has no host: ${trimmed}`);
+    throw new InvalidRequestError("vendor URL has no host", { vendor: trimmed });
   }
   return url.hostname.toLowerCase();
 }

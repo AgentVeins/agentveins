@@ -32,3 +32,31 @@ describe("runDemo", () => {
     }
   });
 });
+
+// I1: the demo printed violation.message straight to stdout, so an ANSI erase-line reaching the
+// message forged a transcript line. Every rendered message now goes through the same escape the
+// audit trail uses, which shows up as quoting.
+describe("the transcript never emits raw terminal control sequences", () => {
+  function hasControlChars(value: string): boolean {
+    return [...value].some((char) => {
+      const code = char.charCodeAt(0);
+      return code < 32 || code === 127;
+    });
+  }
+
+  it("escapes every violation message it renders", async () => {
+    const lines: string[] = [];
+    await runDemo({ mock: true, logImpl: (line) => lines.push(line) });
+
+    const blocked = lines.filter((line) => line.includes("BLOCKED"));
+    expect(blocked.length).toBeGreaterThan(0);
+    for (const line of blocked) {
+      expect(line).toMatch(/BLOCKED {2}\w+ — "/);
+    }
+    for (const line of lines) {
+      // The demo's own act headers open with a literal newline; nothing after it may carry a
+      // control character, because every value on a line is escaped before it is rendered.
+      expect(hasControlChars(line.replace(/^\n+/, ""))).toBe(false);
+    }
+  });
+});

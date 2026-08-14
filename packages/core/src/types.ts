@@ -44,6 +44,11 @@ export type PaymentErrorCode =
 export interface PaymentError {
   code: PaymentErrorCode;
   message: string;
+  /**
+   * Set only when the rail broadcast a transaction whose fate it could not determine. Its
+   * presence means the money may have moved: reconcile the signature against an explorer.
+   */
+  txSig?: string;
 }
 
 export interface PayRequest {
@@ -77,7 +82,12 @@ export interface WalletAdapter {
   execute(req: SettlementRequest): Promise<SettlementReceipt>;
 }
 
-export type AuditOutcome = "settled" | "blocked" | "failed";
+/**
+ * `uncertain` records a payment the rail broadcast but could not confirm. It consumes budget
+ * exactly as `settled` does — a governor that cannot rule out a transfer must assume it
+ * happened — while still telling an operator the settlement was never proven.
+ */
+export type AuditOutcome = "settled" | "blocked" | "failed" | "uncertain";
 export type AuditKind = "payment" | "control";
 
 export interface AuditEntry {
@@ -95,6 +105,8 @@ export interface AuditEntry {
   reason: string;
   outcome: AuditOutcome;
   violation: Violation | null;
+  /** The rail error behind a `failed` or `uncertain` outcome; absent on every other outcome. */
+  error?: PaymentError | null;
   txSig: string | null;
   prevHash: string;
   hash: string;
@@ -109,12 +121,17 @@ export interface AuditSink {
 }
 
 export interface WindowState {
+  /** The UTC calendar day this window covers, as `YYYY-MM-DD`. */
   start: string;
   spentMinor: bigint;
 }
 
 export interface SpendState {
   frozen: boolean;
+  /**
+   * One entry per window the log has spent in, keyed by `windowKey` (`daily:YYYY-MM-DD`).
+   * Every day keeps its own total, so a clock that jumps forward and back never hides spend.
+   */
   windows: Record<string, WindowState>;
   seq: number;
   prevHash: string;

@@ -1,3 +1,5 @@
+import { InvalidRequestError } from "./errors.js";
+
 export const USDC_DECIMALS = 6;
 
 const PLAIN_DECIMAL = /^\d+(\.\d+)?$/;
@@ -8,11 +10,13 @@ export function parseAmount(value: string, decimals: number = USDC_DECIMALS): bi
   }
   const trimmed = value.trim();
   if (!PLAIN_DECIMAL.test(trimmed)) {
-    throw new RangeError(`amount must be a plain non-negative decimal, received: ${value}`);
+    throw new InvalidRequestError("amount must be a plain non-negative decimal", { amount: value });
   }
   const [whole = "", fraction = ""] = trimmed.split(".");
   if (fraction.length > decimals) {
-    throw new RangeError(`amount carries more than ${decimals} decimal places: ${value}`);
+    throw new InvalidRequestError(`amount carries more than ${decimals} decimal places`, {
+      amount: value,
+    });
   }
   return BigInt(whole + fraction.padEnd(decimals, "0"));
 }

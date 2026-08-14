@@ -176,7 +176,7 @@ describe("guard.pay", () => {
     if (result.status === "failed") {
       expect(result.error.code).toBe("adapter_error");
     }
-    expect(guard.state().windows["daily"]?.spentMinor ?? 0n).toBe(0n);
+    expect(guard.state().windows["daily:2026-08-13"]?.spentMinor ?? 0n).toBe(0n);
   });
 
   it("treats a receipt without a transaction signature as failed", async () => {
@@ -189,7 +189,7 @@ describe("guard.pay", () => {
     expect(result.status).toBe("failed");
     expect(sink.entries.map((e) => e.outcome)).toEqual(["failed"]);
     expect(sink.entries[0]!.txSig).toBeNull();
-    expect(guard.state().windows["daily"]?.spentMinor ?? 0n).toBe(0n);
+    expect(guard.state().windows["daily:2026-08-13"]?.spentMinor ?? 0n).toBe(0n);
   });
 
   it("returns an invalid_request violation for an unparseable amount", async () => {
@@ -215,11 +215,11 @@ describe("guard.pay", () => {
     const taken = guard.state();
     taken.frozen = true;
     taken.seq = 99;
-    taken.windows["daily"]!.spentMinor = 0n;
+    taken.windows["daily:2026-08-13"]!.spentMinor = 0n;
 
     expect(guard.state().frozen).toBe(false);
     expect(guard.state().seq).toBe(1);
-    expect(guard.state().windows["daily"]?.spentMinor).toBe(50_000n);
+    expect(guard.state().windows["daily:2026-08-13"]?.spentMinor).toBe(50_000n);
     expect((await guard.pay(request)).status).toBe("settled");
   });
 });
@@ -307,7 +307,7 @@ describe("a guard that cannot record cannot authorize", () => {
     expect(sink.entries).toHaveLength(0);
     expect(adapter.execute).toHaveBeenCalledTimes(1);
     // The money moved, so the in-memory window counts it even though the log does not.
-    expect(guard.state().windows["daily"]?.spentMinor).toBe(50_000n);
+    expect(guard.state().windows["daily:2026-08-13"]?.spentMinor).toBe(50_000n);
   });
 
   it("latches after one audit failure and stops calling the adapter", async () => {
@@ -422,6 +422,7 @@ describe("restart safety", () => {
     const sink = memoryAuditSink();
     const first = await guardWith(fakeAdapter(), sink);
     await first.guard.freeze();
+    await first.guard.flush();
 
     const second = await guardWith(fakeAdapter(), sink);
     expect(second.guard.state().frozen).toBe(true);
@@ -473,6 +474,7 @@ describe("audit trail", () => {
     await guard.pay(request);
     await guard.pay({ ...request, to: "https://evil.example/x" });
     await guard.freeze();
+    await guard.flush();
 
     expect(sink.entries.map((e) => e.outcome)).toEqual(["settled", "blocked", "settled"]);
     expect(sink.entries.map((e) => e.kind)).toEqual(["payment", "payment", "control"]);
@@ -501,6 +503,7 @@ describe("hardening", () => {
     const sink = memoryAuditSink();
     const first = await guardWith(fakeAdapter(), sink);
     await first.guard.freeze();
+    await first.guard.flush();
     await first.guard.unfreeze();
     expect(first.guard.state().frozen).toBe(false);
 
@@ -522,6 +525,7 @@ describe("hardening", () => {
     const sink = memoryAuditSink();
     const first = await guardWith(fakeAdapter(), sink);
     await first.guard.freeze();
+    await first.guard.flush();
 
     const second = await guardWith(fakeAdapter(), sink);
     expect(second.guard.state().frozen).toBe(true);
@@ -632,6 +636,7 @@ describe("the anchor invariant", () => {
     });
     await guard.pay(request);
     await guard.freeze();
+    await guard.flush();
 
     // Each anchor write sees its own entry already appended; an anchor ahead of the log would
     // read as truncation on the next start.
@@ -701,6 +706,7 @@ describe("the anchor invariant", () => {
     const store = memoryAnchorStore();
     const guard = await anchored(sink, store);
     await guard.freeze();
+    await guard.flush();
 
     const anchor = await store.read();
     expect(anchor!.seq).toBe(0);
@@ -719,5 +725,246 @@ describe("the anchor invariant", () => {
         anchor: memoryAnchorStore(),
       }),
     ).rejects.toThrow(/anchor/);
+  });
+});
+
+const ESC = String.fromCharCode(27);
+const CR = String.fromCharCode(13);
+/** An ANSI erase-line plus carriage return: the sequence that forges a transcript line. */
+const ANSI_FORGE = `${ESC}[2K${CR}payment 12 (0.05) settled  tx=forged`;
+
+function hasControlChars(value: string): boolean {
+  return [...value].some((char) => {
+    const code = char.charCodeAt(0);
+    return code < 32 || code === 127;
+  });
+}
+
+// C1: one daily slot let a log entry dated in the future zero the budget for the real day.
+describe("a clock that runs ahead cannot clear the daily budget", () => {
+  it("enforces today's cap after an entry landed in tomorrow", async () => {
+    const sink = memoryAuditSink();
+    const fast = await createGuard({
+      policy: policy(), adapters: [fakeAdapter()], audit: sink,
+      agent: "demo-agent", logId: LOG_ID, signingKey: keys.privateKey,
+      now: () => new Date("2026-08-15T00:30:00.000Z"),
+    });
+    expect((await fast.pay({ ...request, amount: "0.01" })).status).toBe("settled");
+
+    // The operator restarts the process with a correct clock, still inside 2026-08-14.
+    const corrected = await createGuard({
+      policy: policy(), adapters: [fakeAdapter()], audit: sink,
+      agent: "demo-agent", logId: LOG_ID, signingKey: keys.privateKey,
+      now: () => new Date("2026-08-14T23:05:00.000Z"),
+    });
+
+    const results: PayResult[] = [];
+    for (let i = 0; i < 50; i++) {
+      results.push(await corrected.pay(request));
+    }
+
+    expect(results.filter((result) => result.status === "settled")).toHaveLength(10);
+    expect(results.filter((result) => result.status === "blocked")).toHaveLength(40);
+    expect(corrected.state().windows["daily:2026-08-14"]?.spentMinor).toBe(500_000n);
+    expect(corrected.state().windows["daily:2026-08-15"]?.spentMinor).toBe(10_000n);
+  });
+
+  it("keeps each day's spend separate as the clock moves back and forth", async () => {
+    const sink = memoryAuditSink();
+    let at = new Date("2026-08-14T12:00:00.000Z");
+    const guard = await createGuard({
+      policy: policy(), adapters: [fakeAdapter()], audit: sink,
+      agent: "demo-agent", logId: LOG_ID, signingKey: keys.privateKey, now: () => at,
+    });
+
+    await guard.pay({ ...request, amount: "0.10" });
+    at = new Date("2026-08-16T12:00:00.000Z");
+    await guard.pay({ ...request, amount: "0.10" });
+    at = new Date("2026-08-14T13:00:00.000Z");
+    await guard.pay({ ...request, amount: "0.10" });
+
+    expect(guard.state().windows["daily:2026-08-14"]?.spentMinor).toBe(200_000n);
+    expect(guard.state().windows["daily:2026-08-16"]?.spentMinor).toBe(100_000n);
+  });
+});
+
+// I1: a caller-supplied value in violation.message reached stdout unescaped and unbounded.
+describe("hostile request values never travel in a violation message", () => {
+  const hostile: [string, Record<string, unknown>][] = [
+    ["amount", { amount: `1.00${ANSI_FORGE}` }],
+    ["currency", { currency: `USDC${ANSI_FORGE}` }],
+    ["to", { to: `https://${ANSI_FORGE}` }],
+    ["via", { via: `fake${ANSI_FORGE}` }],
+  ];
+
+  for (const [field, override] of hostile) {
+    it(`keeps a hostile ${field} out of the message and out of the log`, async () => {
+      const sink = memoryAuditSink();
+      const { guard } = await guardWith(fakeAdapter(), sink);
+      const result = await guard.pay({ ...request, ...override } as never);
+
+      expect(result.status).toBe("blocked");
+      if (result.status !== "blocked") {
+        return;
+      }
+      expect(hasControlChars(result.violation.message)).toBe(false);
+      expect(result.violation.message).not.toContain("forged");
+      expect(result.violation.message.length).toBeLessThanOrEqual(201);
+
+      for (const value of Object.values(result.violation.detail ?? {})) {
+        expect(hasControlChars(value)).toBe(false);
+        expect(value.length).toBeLessThanOrEqual(121);
+      }
+
+      expect(hasControlChars(JSON.stringify(sink.entries.at(-1)!.violation))).toBe(false);
+    });
+  }
+
+  it("bounds and de-escapes an unbounded vendor a check reports", async () => {
+    const sink = memoryAuditSink();
+    const { guard } = await guardWith(fakeAdapter(), sink);
+    const result = await guard.pay({ ...request, to: `evil${ANSI_FORGE}${"x".repeat(5000)}` });
+
+    expect(blockedCode(result)).toBe("vendor_not_allowed");
+    if (result.status === "blocked") {
+      expect(result.violation.detail?.["vendor"]?.length).toBeLessThanOrEqual(121);
+      expect(hasControlChars(result.violation.detail?.["vendor"] ?? "")).toBe(false);
+    }
+    expect(hasControlChars(JSON.stringify(sink.entries.at(-1)!.violation))).toBe(false);
+  });
+});
+
+// I2: a broadcast the rail could not confirm was logged as failed with no signature at all.
+describe("an unconfirmed broadcast is recorded as uncertain", () => {
+  function timeoutAdapter(): WalletAdapter {
+    return fakeAdapter({
+      execute: vi.fn(async () => {
+        throw Object.assign(new Error("transaction sig-xyz did not confirm: no ruling within 90000ms"), {
+          code: "timeout",
+          unconfirmedSignature: "sig-xyz",
+        });
+      }),
+    });
+  }
+
+  it("records the signature, the error, and the spend", async () => {
+    const sink = memoryAuditSink();
+    const { guard } = await guardWith(timeoutAdapter(), sink);
+    const result = await guard.pay(request);
+
+    expect(result.status).toBe("failed");
+    if (result.status === "failed") {
+      expect(result.error.code).toBe("timeout");
+      expect(result.error.txSig).toBe("sig-xyz");
+    }
+    const entry = sink.entries.at(-1)!;
+    expect(entry.outcome).toBe("uncertain");
+    expect(entry.txSig).toBe("sig-xyz");
+    expect(entry.error?.code).toBe("timeout");
+    expect(entry.error?.message).toContain("did not confirm");
+    expect(guard.state().windows["daily:2026-08-13"]?.spentMinor).toBe(50_000n);
+    expect(await verifyAuditLog(sink.entries, keys.publicKey)).toEqual({ ok: true, checked: 1 });
+  });
+
+  it("survives a restart with the uncertain spend still counted", async () => {
+    const sink = memoryAuditSink();
+    const { guard } = await guardWith(timeoutAdapter(), sink);
+    await guard.pay(request);
+
+    const restarted = await createGuard({
+      policy: policy(), adapters: [fakeAdapter()], audit: sink,
+      agent: "demo-agent", logId: LOG_ID, signingKey: keys.privateKey, now: clock,
+    });
+    expect(restarted.state().windows["daily:2026-08-13"]?.spentMinor).toBe(50_000n);
+  });
+
+  it("still records a definite rail failure as failed and spends nothing", async () => {
+    const sink = memoryAuditSink();
+    const { guard } = await guardWith(
+      fakeAdapter({
+        execute: vi.fn(async () => {
+          throw Object.assign(new Error("the cluster rejected it"), { signature: "sig-rejected" });
+        }),
+      }),
+      sink,
+    );
+    await guard.pay(request);
+
+    expect(sink.entries.at(-1)!.outcome).toBe("failed");
+    expect(sink.entries.at(-1)!.txSig).toBeNull();
+    expect(sink.entries.at(-1)!.error?.code).toBe("adapter_error");
+    expect(guard.state().windows["daily:2026-08-13"]?.spentMinor ?? 0n).toBe(0n);
+  });
+
+  it("refuses a signature shaped like an injected line rather than logging it", async () => {
+    const sink = memoryAuditSink();
+    const { guard } = await guardWith(
+      fakeAdapter({
+        execute: vi.fn(async () => {
+          throw Object.assign(new Error("no ruling"), {
+            code: "timeout",
+            unconfirmedSignature: `sig${ANSI_FORGE}`,
+          });
+        }),
+      }),
+      sink,
+    );
+    const result = await guard.pay(request);
+
+    expect(result.status).toBe("failed");
+    expect(sink.entries.at(-1)!.outcome).toBe("failed");
+    expect(sink.entries.at(-1)!.txSig).toBeNull();
+    expect(hasControlChars(JSON.stringify(sink.entries.at(-1)))).toBe(false);
+  });
+});
+
+// I3: the kill switch was queued behind whatever payment the rail was still working on.
+describe("guard.freeze closes before it is written", () => {
+  it("returns while a payment is still in flight, and blocks what follows", async () => {
+    let release: () => void = () => {};
+    let entered: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const reachedRail = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const adapter = fakeAdapter({
+      execute: vi.fn(async (req: SettlementRequest) => {
+        entered();
+        await held;
+        return { txSig: `sig-${req.amountMinor}`, rail: "fake" };
+      }),
+    });
+    const sink = memoryAuditSink();
+    const { guard } = await guardWith(adapter, sink);
+
+    const inFlight = guard.pay(request);
+    await reachedRail;
+    const queued = guard.pay(request);
+
+    let paymentResolved = false;
+    void inFlight.then(() => {
+      paymentResolved = true;
+    });
+
+    // Queued behind the payment, this await would never return until `release` below.
+    await guard.freeze();
+    expect(paymentResolved).toBe(false);
+    expect(guard.state().frozen).toBe(true);
+
+    release();
+    expect((await inFlight).status).toBe("settled");
+    expect(blockedCode(await queued)).toBe("kill_switch");
+    await guard.flush();
+    expect(sink.entries.map((entry) => entry.outcome)).toEqual(["settled", "blocked", "settled"]);
+    expect(await verifyAuditLog(sink.entries, keys.publicKey)).toEqual({ ok: true, checked: 3 });
+  });
+
+  it("keeps payments serialized: 40 racing pays against a budget of 10 settle exactly 10", async () => {
+    const { guard } = await guardWith(fakeAdapter());
+    const results = await Promise.all(Array.from({ length: 40 }, () => guard.pay(request)));
+    expect(results.filter((result) => result.status === "settled")).toHaveLength(10);
+    expect(results.filter((result) => result.status === "blocked")).toHaveLength(30);
   });
 });

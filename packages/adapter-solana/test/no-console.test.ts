@@ -8,7 +8,7 @@ const srcDir = "packages/adapter-solana/src";
 
 describe("library code", () => {
   it("never reaches for console", async () => {
-    const files = (await readdir(srcDir)).filter(
+    const files = (await readdir(srcDir, { recursive: true })).filter(
       (name) => name.endsWith(".ts") && !name.endsWith(".d.ts"),
     );
     expect(files.length).toBeGreaterThan(0);

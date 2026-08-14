@@ -12,11 +12,15 @@ export class CorruptLogError extends Error {
   }
 }
 
+function utcDay(at: Date): string {
+  return at.toISOString().slice(0, 10);
+}
+
 export function windowKey(period: BudgetPeriod, now: Date): string {
   if (period !== "daily") {
     return "";
   }
-  return now.toISOString().slice(0, 10);
+  return `daily:${utcDay(now)}`;
 }
 
 export function emptyState(policy: Policy): SpendState {
@@ -27,11 +31,7 @@ export function spentInWindow(state: SpendState, period: BudgetPeriod, now: Date
   if (period !== "daily") {
     return 0n;
   }
-  const current = state.windows["daily"];
-  if (current === undefined || current.start !== windowKey("daily", now)) {
-    return 0n;
-  }
-  return current.spentMinor;
+  return state.windows[windowKey("daily", now)]?.spentMinor ?? 0n;
 }
 
 export function applyEntry(state: SpendState, entry: AuditEntry): SpendState {
@@ -51,7 +51,9 @@ export function applyEntry(state: SpendState, entry: AuditEntry): SpendState {
     return next;
   }
 
-  if (entry.outcome !== "settled") {
+  // An `uncertain` payment reached the rail and may have landed, so it consumes budget: a
+  // governor that under-counts unproven spend lets an agent re-spend money it already sent.
+  if (entry.outcome !== "settled" && entry.outcome !== "uncertain") {
     return next;
   }
 
@@ -63,14 +65,18 @@ export function applyEntry(state: SpendState, entry: AuditEntry): SpendState {
     throw new CorruptLogError(entry.seq, `entry ${entry.seq} has a malformed amountMinor`);
   }
 
-  const day = windowKey("daily", parsedTs);
+  // Every day owns its own bucket. Accruing into the entry's own day rather than into a single
+  // rolling slot is what makes a clock that runs ahead — or an entry that arrives out of order —
+  // unable to zero the day being enforced. Key growth is one small record per day the log spent
+  // in (a decade of daily payments is well under a thousand), so nothing is evicted: dropping a
+  // key would reintroduce exactly the read-returns-zero failure this replaces.
+  const key = windowKey("daily", parsedTs);
   const amount = BigInt(entry.amountMinor);
-  const current = next.windows["daily"];
-  if (current === undefined || day > current.start) {
-    next.windows["daily"] = { start: day, spentMinor: amount };
-  } else if (day === current.start) {
-    next.windows["daily"] = { start: day, spentMinor: current.spentMinor + amount };
-  }
+  const current = next.windows[key];
+  next.windows[key] = {
+    start: utcDay(parsedTs),
+    spentMinor: current === undefined ? amount : current.spentMinor + amount,
+  };
 
   return next;
 }

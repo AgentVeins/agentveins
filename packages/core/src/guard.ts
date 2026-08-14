@@ -2,8 +2,10 @@ import { createPublicKey, randomUUID, type KeyObject } from "node:crypto";
 import { sealAnchor, verifyAnchor } from "./audit/anchor.js";
 import { hashEntry, signHash, verifyAuditLog } from "./audit/entry.js";
 import { CHECKS } from "./checks/index.js";
+import { InvalidRequestError } from "./errors.js";
 import { parseAmount } from "./money.js";
 import { validatePolicy } from "./policy.js";
+import { sanitizePaymentError, sanitizeSignature, sanitizeViolation } from "./sanitize.js";
 import { applyEntry, emptyState, replay } from "./state.js";
 import type {
   Anchor, AnchorStore, AuditEntry, AuditOutcome, AuditSink, PayRequest, PayResult, PaymentError,
@@ -26,9 +28,16 @@ export interface GuardOptions {
 
 export interface Guard {
   pay(req: PayRequest): Promise<PayResult>;
+  /**
+   * Closes the kill switch. It resolves as soon as the switch is closed — every later `pay`
+   * is already blocked — while the control entry it appends is written behind whatever
+   * payment was in flight. Await `flush` to know that entry reached the sink.
+   */
   freeze(): Promise<void>;
   unfreeze(): Promise<void>;
   state(): SpendState;
+  /** Resolves once every queued payment and control write has finished. */
+  flush(): Promise<void>;
 }
 
 interface WriteInput {
@@ -39,6 +48,7 @@ interface WriteInput {
   reason: string;
   outcome: AuditOutcome;
   violation: Violation | null;
+  error: PaymentError | null;
   txSig: string | null;
   rail: string | null;
   ts: Date;
@@ -57,14 +67,33 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+// An adapter that broadcast a transaction it could not confirm reports the signature on
+// `unconfirmedSignature`. The name is the contract: an error that merely knows a signature —
+// a cluster rejection, say — must not set it, because that money never moved.
 function toPaymentError(error: unknown): PaymentError {
-  if (typeof error === "object" && error !== null && "code" in error) {
-    const code = (error as { code: unknown }).code;
-    if (code === "price_mismatch" || code === "insufficient_funds" || code === "timeout") {
-      return { code, message: messageOf(error) };
-    }
+  const fields = (typeof error === "object" && error !== null ? error : {}) as {
+    code?: unknown;
+    unconfirmedSignature?: unknown;
+  };
+  const code = fields.code;
+  const known = code === "price_mismatch" || code === "insufficient_funds" || code === "timeout";
+  const paymentError: PaymentError = {
+    code: known ? code : "adapter_error",
+    message: messageOf(error),
+  };
+  const txSig = sanitizeSignature(fields.unconfirmedSignature);
+  if (txSig !== undefined) {
+    paymentError.txSig = txSig;
   }
-  return { code: "adapter_error", message: messageOf(error) };
+  return sanitizePaymentError(paymentError);
+}
+
+function invalidRequest(error: unknown): Violation {
+  const violation: Violation =
+    error instanceof InvalidRequestError && Object.keys(error.detail).length > 0
+      ? { code: "invalid_request", message: error.message, detail: error.detail }
+      : { code: "invalid_request", message: messageOf(error) };
+  return sanitizeViolation(violation);
 }
 
 function snapshot(state: SpendState): SpendState {
@@ -190,6 +219,7 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
       reason: input.reason,
       outcome: input.outcome,
       violation: input.violation,
+      error: input.error,
       txSig: input.txSig,
       prevHash: state.prevHash,
     };
@@ -232,7 +262,7 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
     }
     const adapter = adapters.find((candidate) => candidate.name === via);
     if (adapter === undefined) {
-      throw new RangeError(`no adapter named ${via} is registered`);
+      throw new InvalidRequestError("no adapter with that name is registered", { via });
     }
     return adapter;
   }
@@ -266,19 +296,19 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
         throw new RangeError("the clock returned an invalid Date");
       }
       if (req.currency !== "USDC") {
-        throw new RangeError(`unsupported currency: ${String(req.currency)}`);
+        throw new InvalidRequestError("unsupported currency", { currency: String(req.currency) });
       }
       if (typeof req.reason !== "string") {
         throw new TypeError("reason must be a string");
       }
       amountMinor = parseAmount(req.amount);
       if (amountMinor <= 0n) {
-        throw new RangeError(`amount must be greater than zero, received: ${req.amount}`);
+        throw new InvalidRequestError("amount must be greater than zero", { amount: req.amount });
       }
       vendorNormalized = normalizeVendor(req.to);
       adapter = pickAdapter(req.via);
     } catch (error) {
-      const violation: Violation = { code: "invalid_request", message: messageOf(error) };
+      const violation = invalidRequest(error);
       const outcome = await write({
         kind: "payment",
         vendor: typeof fields.to === "string" ? fields.to : "",
@@ -287,6 +317,7 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
         reason: typeof fields.reason === "string" ? fields.reason : "",
         outcome: "blocked",
         violation,
+        error: null,
         txSig: null,
         rail: null,
         ts: auditTs,
@@ -319,9 +350,12 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
     }
 
     if (violation !== null) {
+      // Every violation crosses this one boundary, so a check that puts an untrusted vendor in
+      // `detail` and the guard's own request errors are bounded and de-escaped identically.
+      violation = sanitizeViolation(violation);
       const outcome = await write({
         kind: "payment", vendor: req.to, vendorNormalized, amountMinor,
-        reason: req.reason, outcome: "blocked", violation,
+        reason: req.reason, outcome: "blocked", violation, error: null,
         txSig: null, rail: adapter.name, ts: auditTs, applyWhenUnrecorded: true,
       });
       return { status: "blocked", violation, auditId: outcome.id };
@@ -340,10 +374,15 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
       rail = typeof receipt.rail === "string" ? receipt.rail : adapter.name;
     } catch (error) {
       const paymentError = toPaymentError(error);
+      // A rail that broadcast without confirming leaves the money's fate unknown, so the log
+      // records `uncertain` with the signature to reconcile against, and the amount consumes
+      // budget. Reporting `failed` while spending nothing would let the agent send it twice.
+      const unconfirmed = paymentError.txSig !== undefined;
       const outcome = await write({
         kind: "payment", vendor: req.to, vendorNormalized, amountMinor,
-        reason: req.reason, outcome: "failed", violation: null,
-        txSig: null, rail: adapter.name, ts: auditTs, applyWhenUnrecorded: true,
+        reason: req.reason, outcome: unconfirmed ? "uncertain" : "failed", violation: null,
+        error: paymentError, txSig: paymentError.txSig ?? null,
+        rail: adapter.name, ts: auditTs, applyWhenUnrecorded: true,
       });
       return { status: "failed", error: paymentError, auditId: outcome.id };
     }
@@ -352,7 +391,7 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
     // the payment settled — an agent that never hears about a settlement retries it.
     const settlement = await write({
       kind: "payment", vendor: req.to, vendorNormalized, amountMinor,
-      reason: req.reason, outcome: "settled", violation: null,
+      reason: req.reason, outcome: "settled", violation: null, error: null,
       txSig, rail, ts: auditTs, applyWhenUnrecorded: true,
     });
     return { status: "settled", txSig, auditId: settlement.id };
@@ -367,7 +406,7 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
     // recorded does not: the kill switch always fails toward the more restrictive state.
     await write({
       kind: "control", vendor: "", vendorNormalized: "", amountMinor: 0n,
-      reason: action, outcome: "settled", violation: null,
+      reason: action, outcome: "settled", violation: null, error: null,
       txSig: null, rail: null, ts: Number.isNaN(ts.getTime()) ? new Date() : ts,
       applyWhenUnrecorded: action === "freeze",
     });
@@ -375,8 +414,16 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
 
   return {
     pay: (req) => serialize(() => runPayment(req)),
-    freeze: () => serialize(() => setFrozen("freeze")),
+    // The kill switch closes before it is written, not after: queuing the flag behind an
+    // in-flight payment would bound an emergency stop by the rail's slowest call. Only the
+    // control entry's write is serialized, so it still lands in chain order. Unfreezing stays
+    // fully queued — the switch may snap shut out of turn, never open out of turn.
+    freeze: async () => {
+      state = { ...state, frozen: true };
+      void serialize(() => setFrozen("freeze")).catch(() => undefined);
+    },
     unfreeze: () => serialize(() => setFrozen("unfreeze")),
     state: () => snapshot(state),
+    flush: () => serialize(async () => undefined),
   };
 }

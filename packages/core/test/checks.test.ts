@@ -27,7 +27,7 @@ function ctx(overrides: Partial<PaymentContext> = {}): PaymentContext {
 }
 
 function stateWithSpend(spentMinor: bigint): SpendState {
-  return { ...emptyState(policy), windows: { daily: { start: "2026-08-13", spentMinor } } };
+  return { ...emptyState(policy), windows: { "daily:2026-08-13": { start: "2026-08-13", spentMinor } } };
 }
 
 describe("killSwitchCheck", () => {
@@ -79,7 +79,7 @@ describe("budgetCheck", () => {
   it("ignores spend recorded on a previous UTC day", () => {
     const stale: SpendState = {
       ...emptyState(policy),
-      windows: { daily: { start: "2026-08-12", spentMinor: 500_000n } },
+      windows: { "daily:2026-08-12": { start: "2026-08-12", spentMinor: 500_000n } },
     };
     expect(budgetCheck(ctx(), policy, stale)).toBeNull();
   });

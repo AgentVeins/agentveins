@@ -13,7 +13,7 @@ function payment(seq: number, ts: string, amountMinor: string, outcome: AuditOut
     id: `id-${seq}`, logId: "log-alpha", seq, ts, kind: "payment", agent: "a",
     vendor: "api.weather.com", vendorNormalized: "api.weather.com", rail: "solana",
     amountMinor, currency: "USDC", reason: "r", outcome,
-    violation: null, txSig: outcome === "settled" ? "sig" : null,
+    violation: null, error: null, txSig: outcome === "blocked" ? null : "sig",
     prevHash: "", hash: `h-${seq}`, sig: "s",
   };
 }
@@ -23,18 +23,18 @@ function control(seq: number, ts: string, action: string): AuditEntry {
     id: `id-${seq}`, logId: "log-alpha", seq, ts, kind: "control", agent: "a",
     vendor: "", vendorNormalized: "", rail: null,
     amountMinor: "0", currency: "USDC", reason: action, outcome: "settled",
-    violation: null, txSig: null, prevHash: "", hash: `h-${seq}`, sig: "s",
+    violation: null, error: null, txSig: null, prevHash: "", hash: `h-${seq}`, sig: "s",
   };
 }
 
 describe("windowKey", () => {
   it("keys daily windows by UTC calendar day", () => {
-    expect(windowKey("daily", new Date("2026-08-13T23:59:59.999Z"))).toBe("2026-08-13");
-    expect(windowKey("daily", new Date("2026-08-14T00:00:00.000Z"))).toBe("2026-08-14");
+    expect(windowKey("daily", new Date("2026-08-13T23:59:59.999Z"))).toBe("daily:2026-08-13");
+    expect(windowKey("daily", new Date("2026-08-14T00:00:00.000Z"))).toBe("daily:2026-08-14");
   });
 
   it("uses UTC even when the host is not", () => {
-    expect(windowKey("daily", new Date("2026-08-13T18:30:00.000Z"))).toBe("2026-08-13");
+    expect(windowKey("daily", new Date("2026-08-13T18:30:00.000Z"))).toBe("daily:2026-08-13");
   });
 
   it("has no window for per_tx", () => {
@@ -79,11 +79,28 @@ describe("applyEntry", () => {
     expect(state.frozen).toBe(false);
   });
 
-  it("ignores a backdated settled entry that arrives after a later one", () => {
+  it("keeps a backdated settled entry in its own day without disturbing the later one", () => {
     let state = emptyState(policy);
     state = applyEntry(state, payment(0, "2026-08-14T09:00:00.000Z", "490000", "settled"));
     state = applyEntry(state, payment(1, "2026-08-13T23:59:59.000Z", "10", "settled"));
     expect(spentInWindow(state, "daily", new Date("2026-08-14T09:01:00.000Z"))).toBe(490_000n);
+    expect(spentInWindow(state, "daily", new Date("2026-08-13T23:59:59.500Z"))).toBe(10n);
+  });
+
+  // C1: a clock that runs fast writes an entry into tomorrow. Under one rolling window that
+  // entry replaced the slot, and every later read against the true day found nothing.
+  it("still enforces today after an entry lands in a future day", () => {
+    let state = emptyState(policy);
+    state = applyEntry(state, payment(0, "2026-08-14T00:30:00.000Z", "10000", "settled"));
+    state = applyEntry(state, payment(1, "2026-08-13T23:05:00.000Z", "400000", "settled"));
+    expect(spentInWindow(state, "daily", new Date("2026-08-13T23:06:00.000Z"))).toBe(400_000n);
+    expect(spentInWindow(state, "daily", new Date("2026-08-14T00:31:00.000Z"))).toBe(10_000n);
+  });
+
+  it("accrues an uncertain payment, which may have moved money, exactly like a settled one", () => {
+    let state = emptyState(policy);
+    state = applyEntry(state, payment(0, "2026-08-13T10:00:00.000Z", "50000", "uncertain"));
+    expect(spentInWindow(state, "daily", new Date("2026-08-13T12:00:00.000Z"))).toBe(50_000n);
   });
 
   for (const reason of ["", "FREEZE", "freeze ", "rotate-key"]) {
