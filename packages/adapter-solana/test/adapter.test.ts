@@ -1,4 +1,5 @@
 import type { webcrypto } from "node:crypto";
+import { safeBase64Encode } from "@x402/core/utils";
 import { describe, expect, it, vi } from "vitest";
 import { PriceMismatchError, solanaAdapter } from "../src/index.js";
 import type { SignatureStatus } from "../src/index.js";
@@ -17,6 +18,35 @@ const signedTransfer = {
 };
 
 const confirmed: SignatureStatus = { confirmationStatus: "confirmed", err: null };
+
+const PAY_TO = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM";
+const FEE_PAYER = "3Nb2Y5aMBpqZ1vPnJLnHYxTFkGiwGXVQxHwR9nrqYzQd";
+const SETTLED_SIG =
+  "5VERv8NMvzbJMEkV8xnrLkEaWRtSz9CosKDYjCJjBRnbJLgp8uirBgmQpjKhoR4tjF3ZpRzrFmBV6UjKdiSZkQUW";
+
+const x402Transfer = { wireTransaction: "AQID", lastValidBlockHeight: 100n };
+
+function quoteResponse(maxAmountRequired: string): Response {
+  return new Response(
+    JSON.stringify({
+      x402Version: 1,
+      accepts: [
+        {
+          scheme: "exact",
+          network: "solana-devnet",
+          maxAmountRequired,
+          resource: "https://api.weather.com/forecast",
+          description: "a weather forecast",
+          payTo: PAY_TO,
+          maxTimeoutSeconds: 60,
+          asset: config.usdcMint,
+          extra: { feePayer: FEE_PAYER },
+        },
+      ],
+    }),
+    { status: 402, headers: { "content-type": "application/json" } },
+  );
+}
 
 function buildSpy() {
   return vi.fn(async () => signedTransfer);
@@ -142,35 +172,25 @@ describe("solanaAdapter", () => {
   });
 
   it("pays a vendor's 402 quote in x402 mode without submitting to the rpc itself", async () => {
-    const build = buildSpy();
+    const buildX402 = vi.fn(async () => x402Transfer);
     const send = vi.fn();
     const fetchImpl = vi
       .fn()
+      .mockResolvedValueOnce(quoteResponse("40000"))
       .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            x402Version: 1,
-            accepts: [
-              {
-                scheme: "exact",
-                network: "solana-devnet",
-                maxAmountRequired: "40000",
-                resource: "https://api.weather.com/forecast",
-                description: "a weather forecast",
-                payTo: "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
-                maxTimeoutSeconds: 60,
-                asset: config.usdcMint,
-              },
-            ],
-          }),
-          { status: 402, headers: { "content-type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(new Response("{}", { status: 200 }));
+        new Response("{}", {
+          status: 200,
+          headers: {
+            "x-payment-response": safeBase64Encode(
+              JSON.stringify({ success: true, transaction: SETTLED_SIG, network: "solana-devnet" }),
+            ),
+          },
+        }),
+      );
     const adapter = solanaAdapter({
       ...config,
       mode: "x402",
-      buildSignedTransfer: build,
+      buildX402Transfer: buildX402,
       sendTransaction: send,
       fetchImpl,
     });
@@ -181,39 +201,24 @@ describe("solanaAdapter", () => {
       reason: "forecast",
     });
 
-    expect(receipt).toEqual({ txSig: "sig-abc", rail: "solana" });
-    expect(build).toHaveBeenCalledExactlyOnceWith("9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM", 40_000n);
+    expect(receipt).toEqual({ txSig: SETTLED_SIG, rail: "solana" });
+    expect(buildX402).toHaveBeenCalledExactlyOnceWith({
+      payTo: PAY_TO,
+      amountMinor: 40_000n,
+      feePayer: FEE_PAYER,
+    });
     expect(send).toHaveBeenCalledTimes(0);
   });
 
   it("signs nothing in x402 mode when the vendor quotes more than the guard approved", async () => {
-    const build = buildSpy();
-    const fetchImpl = vi.fn().mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          x402Version: 1,
-          accepts: [
-            {
-              scheme: "exact",
-              network: "solana-devnet",
-              maxAmountRequired: "500000",
-              resource: "https://api.weather.com/forecast",
-              description: "a weather forecast",
-              payTo: "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
-              maxTimeoutSeconds: 60,
-              asset: config.usdcMint,
-            },
-          ],
-        }),
-        { status: 402, headers: { "content-type": "application/json" } },
-      ),
-    );
-    const adapter = solanaAdapter({ ...config, mode: "x402", buildSignedTransfer: build, fetchImpl });
+    const buildX402 = vi.fn(async () => x402Transfer);
+    const fetchImpl = vi.fn().mockResolvedValueOnce(quoteResponse("500000"));
+    const adapter = solanaAdapter({ ...config, mode: "x402", buildX402Transfer: buildX402, fetchImpl });
 
     await expect(
       adapter.execute({ to: "https://api.weather.com/forecast", amountMinor: 50_000n, reason: "forecast" }),
     ).rejects.toBeInstanceOf(PriceMismatchError);
-    expect(build).toHaveBeenCalledTimes(0);
+    expect(buildX402).toHaveBeenCalledTimes(0);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 

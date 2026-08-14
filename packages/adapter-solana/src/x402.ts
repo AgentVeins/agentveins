@@ -1,9 +1,14 @@
-// Payload construction goes through @x402/core rather than hand-rolled JSON: the 402 quote is
-// validated with PaymentRequiredSchema, the payment payload with PaymentPayloadV1Schema, and the
-// header is encoded with safeBase64Encode — the same function x402's own header codec calls.
-// @x402/svm's ExactSvmScheme is deliberately NOT used: its createPaymentPayload builds and signs
-// its own transaction from a TransactionSigner, and this adapter must sign through Task 10's
-// buildSignedTransfer so that direct mode and x402 mode send byte-identical transfers.
+// The quote is validated with @x402/core's own zod schemas (PaymentRequiredSchema), the payment
+// payload with PaymentPayloadV1Schema, and the header is encoded with safeBase64Encode — the same
+// function x402's own header codec calls. @x402/svm's client is deliberately NOT used: its
+// createPaymentPayload builds and signs its own transaction from a TransactionSigner and fetches
+// its own blockhash and mint metadata, which would put an rpc call inside every code path here.
+// buildX402Transfer reproduces the layout that scheme's verifier requires instead, and
+// test/x402-transfer.test.ts proves it by running the shipped verifier over the result.
+// Note the transaction x402 mode sends is NOT the one direct mode sends: here the facilitator is
+// the fee payer and this wallet signs only as the transfer authority, so there is no locally
+// computable transaction signature and the facilitator's settlement response is the only source
+// of one.
 import type { SettlementReceipt } from "@agentveins/core";
 import { decodePaymentResponseHeader } from "@x402/core/http";
 import { PaymentPayloadV1Schema, PaymentRequiredSchema } from "@x402/core/schemas";
@@ -11,11 +16,13 @@ import type { PaymentRequirementsV1 } from "@x402/core/schemas";
 import { safeBase64Encode } from "@x402/core/utils";
 import type { ExactSvmPayloadV1 } from "@x402/svm";
 import { isAddress } from "@solana/kit";
-import type { SignedTransfer } from "./transfer.js";
+import type { X402Transfer, X402TransferRequest } from "./transfer.js";
 
 const EXACT_SCHEME = "exact";
 const DEFAULT_NETWORK = "solana-devnet";
+const DEFAULT_TIMEOUT_MS = 30_000;
 const MINOR_UNITS = /^[0-9]+$/;
+const SETTLEMENT_SIGNATURE = /^[1-9A-HJ-NP-Za-km-z]{64,88}$/;
 
 export class PriceMismatchError extends Error {
   readonly code = "price_mismatch";
@@ -28,19 +35,21 @@ export class PriceMismatchError extends Error {
 export interface FacilitatorInput {
   vendorUrl: string;
   approvedAmountMinor: bigint;
-  /** Called only after the quote clears the price check, so a rejected quote never gets signed. */
-  signTransfer: (payTo: string, amountMinor: bigint) => Promise<SignedTransfer>;
-  /** The resource server settles with its own facilitator; the client never calls one directly. */
-  facilitatorUrl?: string;
+  /** The only mint this adapter will pay in; a quote naming any other asset is refused. */
+  expectedAsset: string;
+  /** Called only after the quote clears every check, so a rejected quote never gets signed. */
+  signTransfer: (request: X402TransferRequest) => Promise<X402Transfer>;
   network?: string;
+  timeoutMs?: number;
   fetchImpl?: typeof fetch;
 }
 
 export async function settleViaFacilitator(input: FacilitatorInput): Promise<SettlementReceipt> {
   const doFetch = input.fetchImpl ?? fetch;
   const network = input.network ?? DEFAULT_NETWORK;
+  const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-  const quoteResponse = await doFetch(input.vendorUrl);
+  const quoteResponse = await doFetch(input.vendorUrl, { signal: AbortSignal.timeout(timeoutMs) });
   if (quoteResponse.status !== 402) {
     throw new Error(`the endpoint did not request payment (status ${quoteResponse.status})`);
   }
@@ -53,11 +62,27 @@ export async function settleViaFacilitator(input: FacilitatorInput): Promise<Set
   if (quotedMinor > input.approvedAmountMinor) {
     throw new PriceMismatchError(input.approvedAmountMinor, quotedMinor);
   }
+  if (quotedMinor <= 0n) {
+    throw new Error("the endpoint quoted a price of zero");
+  }
+  if (accepted.asset !== input.expectedAsset) {
+    throw new Error("the endpoint quoted an asset this adapter is not configured to pay");
+  }
+  // TODO: policy governs the vendor URL, not this address. An allowlisted endpoint that has been
+  // compromised or hijacked can name any recipient at or under the approved amount and the payment
+  // still reads as governed. `isAddress` proves the address is well formed, never that it is the
+  // vendor's. Closing this needs a recipient allowlist or a signed vendor identity in the policy.
   if (!isAddress(accepted.payTo)) {
     throw new Error("the endpoint quoted an unusable solana payment address");
   }
 
-  const signed = await input.signTransfer(accepted.payTo, quotedMinor);
+  const signed = await input.signTransfer({
+    payTo: accepted.payTo,
+    amountMinor: quotedMinor,
+    feePayer: readFeePayer(accepted),
+    ...readMemo(accepted),
+  });
+
   const payload: ExactSvmPayloadV1 = { transaction: signed.wireTransaction };
   const header = safeBase64Encode(
     JSON.stringify(
@@ -65,12 +90,15 @@ export async function settleViaFacilitator(input: FacilitatorInput): Promise<Set
     ),
   );
 
-  const paidResponse = await doFetch(input.vendorUrl, { headers: { "X-PAYMENT": header } });
+  const paidResponse = await doFetch(input.vendorUrl, {
+    headers: { "X-PAYMENT": header },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
   if (!paidResponse.ok) {
     throw new Error(`the vendor rejected the payment (status ${paidResponse.status})`);
   }
 
-  return { txSig: settledSignature(paidResponse, signed.signature), rail: "solana" };
+  return { txSig: settledSignature(paidResponse), rail: "solana" };
 }
 
 async function readQuote(response: Response): Promise<PaymentRequirementsV1[]> {
@@ -109,22 +137,51 @@ function readQuotedMinor(maxAmountRequired: string): bigint {
   return BigInt(maxAmountRequired);
 }
 
-function settledSignature(response: Response, signedSignature: string): string {
-  const header = response.headers.get("x-payment-response") ?? response.headers.get("payment-response");
+function readFeePayer(accepted: PaymentRequirementsV1): string {
+  const feePayer = accepted.extra?.["feePayer"];
+  if (typeof feePayer !== "string" || !isAddress(feePayer)) {
+    throw new Error("the endpoint named no facilitator fee payer to build the transaction around");
+  }
+  return feePayer;
+}
+
+function readMemo(accepted: PaymentRequirementsV1): { memo?: string } {
+  const memo = accepted.extra?.["memo"];
+  if (memo === undefined || memo === null) {
+    return {};
+  }
+  if (typeof memo !== "string") {
+    throw new Error("the endpoint quoted a memo that is not a string");
+  }
+  return { memo };
+}
+
+function settledSignature(response: Response): string {
+  const header =
+    response.headers.get("x-payment-response") ?? response.headers.get("payment-response");
   if (header === null) {
-    return signedSignature;
+    throw new Error("the vendor returned no x402 settlement response");
   }
 
-  let settled;
+  // decodePaymentResponseHeader is base64 plus JSON.parse with no schema behind it, so everything
+  // read out of it is untrusted until checked here. An unverifiable signature must never reach the
+  // audit log, which signs whatever it is handed.
+  let decoded: unknown;
   try {
-    settled = decodePaymentResponseHeader(header);
+    decoded = decodePaymentResponseHeader(header);
   } catch {
-    return signedSignature;
+    throw new Error("the vendor returned a malformed x402 settlement response");
   }
-  if (settled.success === false) {
+  if (typeof decoded !== "object" || decoded === null) {
+    throw new Error("the vendor returned a malformed x402 settlement response");
+  }
+
+  const settled = decoded as { success?: unknown; transaction?: unknown };
+  if (settled.success !== true) {
     throw new Error("the facilitator did not settle the payment");
   }
-  return typeof settled.transaction === "string" && settled.transaction.length > 0
-    ? settled.transaction
-    : signedSignature;
+  if (typeof settled.transaction !== "string" || !SETTLEMENT_SIGNATURE.test(settled.transaction)) {
+    throw new Error("the vendor reported a settlement without a usable transaction signature");
+  }
+  return settled.transaction;
 }

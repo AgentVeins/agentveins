@@ -3,12 +3,11 @@ import type { SettlementReceipt, SettlementRequest, WalletAdapter } from "@agent
 import { createSignerFromKeyPair } from "@solana/kit";
 import { confirmSignature, createDirectRail } from "./direct.js";
 import type { DirectRail, SignatureStatus } from "./direct.js";
-import { buildSignedTransfer } from "./transfer.js";
-import type { SignedTransfer } from "./transfer.js";
+import { buildSignedTransfer, buildX402Transfer } from "./transfer.js";
+import type { SignedTransfer, TransferDeps, X402Transfer, X402TransferRequest } from "./transfer.js";
 import { settleViaFacilitator } from "./x402.js";
 
 export const DEVNET_USDC_MINT = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
-export const DEFAULT_FACILITATOR_URL = "https://x402.org/facilitator";
 const USDC_DECIMALS = 6;
 const DEFAULT_POLL_INTERVAL_MS = 500;
 
@@ -17,10 +16,11 @@ export interface SolanaAdapterConfig {
   rpcUrl: string;
   mode: "x402" | "direct";
   usdcMint?: string;
-  facilitatorUrl?: string;
   pollIntervalMs?: number;
+  timeoutMs?: number;
   fetchImpl?: typeof fetch;
   buildSignedTransfer?: (to: string, amountMinor: bigint) => Promise<SignedTransfer>;
+  buildX402Transfer?: (request: X402TransferRequest) => Promise<X402Transfer>;
   sendTransaction?: (wireTransaction: string) => Promise<string>;
   getSignatureStatus?: (signature: string) => Promise<SignatureStatus | null>;
   getBlockHeight?: () => Promise<bigint>;
@@ -39,16 +39,19 @@ export function solanaAdapter(config: SolanaAdapterConfig): WalletAdapter {
   let rail: DirectRail | undefined;
   const useRail = (): DirectRail => (rail ??= createDirectRail(config.rpcUrl));
 
+  const transferDeps = async (): Promise<TransferDeps> => ({
+    rpcUrl: config.rpcUrl,
+    signer: await createSignerFromKeyPair(config.keypair),
+    usdcMint,
+    decimals: USDC_DECIMALS,
+  });
+
   const build =
     config.buildSignedTransfer ??
-    (async (to: string, amountMinor: bigint) => {
-      const signer = await createSignerFromKeyPair(config.keypair);
-      return buildSignedTransfer(
-        { rpcUrl: config.rpcUrl, signer, usdcMint, decimals: USDC_DECIMALS },
-        to,
-        amountMinor,
-      );
-    });
+    (async (to: string, amountMinor: bigint) => buildSignedTransfer(await transferDeps(), to, amountMinor));
+  const buildX402 =
+    config.buildX402Transfer ??
+    (async (request: X402TransferRequest) => buildX402Transfer(await transferDeps(), request));
   const send =
     config.sendTransaction ?? ((wireTransaction: string) => useRail().sendTransaction(wireTransaction));
   const getSignatureStatus =
@@ -69,8 +72,9 @@ export function solanaAdapter(config: SolanaAdapterConfig): WalletAdapter {
         return settleViaFacilitator({
           vendorUrl: req.to,
           approvedAmountMinor: req.amountMinor,
-          signTransfer: build,
-          facilitatorUrl: config.facilitatorUrl ?? DEFAULT_FACILITATOR_URL,
+          expectedAsset: usdcMint,
+          signTransfer: buildX402,
+          ...(config.timeoutMs === undefined ? {} : { timeoutMs: config.timeoutMs }),
           ...(config.fetchImpl === undefined ? {} : { fetchImpl: config.fetchImpl }),
         });
       }
@@ -87,8 +91,14 @@ export function solanaAdapter(config: SolanaAdapterConfig): WalletAdapter {
   };
 }
 
-export { buildSignedTransfer } from "./transfer.js";
-export type { SignedTransfer, TransferDeps } from "./transfer.js";
+export { buildSignedTransfer, buildX402Transfer } from "./transfer.js";
+export type {
+  BlockhashLifetime,
+  SignedTransfer,
+  TransferDeps,
+  X402Transfer,
+  X402TransferRequest,
+} from "./transfer.js";
 export { TransactionNotConfirmedError } from "./direct.js";
 export { PriceMismatchError, settleViaFacilitator } from "./x402.js";
 export type { FacilitatorInput } from "./x402.js";
