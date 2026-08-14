@@ -11,5 +11,5 @@
     "./sinks/file": "./dist/audit/fileSink.js"
   },
   "files": ["dist"],
-  "scripts": { "build": "tsc --build" }
+  "scripts": { "build": "tsc --build", "typecheck": "tsc -p tsconfig.test.json" }
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyEntry, emptyState, replay, spentInWindow, windowKey } from "../src/state.js";
+import { CorruptLogError, applyEntry, emptyState, replay, spentInWindow, windowKey } from "../src/state.js";
 import type { AuditEntry, AuditOutcome, Policy } from "../src/types.js";
 
 const policy: Policy = {
@@ -18,7 +18,7 @@ function payment(seq: number, ts: string, amountMinor: string, outcome: AuditOut
   };
 }
 
-function control(seq: number, ts: string, action: "freeze" | "unfreeze"): AuditEntry {
+function control(seq: number, ts: string, action: string): AuditEntry {
   return {
     id: `id-${seq}`, logId: "log-alpha", seq, ts, kind: "control", agent: "a",
     vendor: "", vendorNormalized: "", rail: null,
@@ -77,6 +77,61 @@ describe("applyEntry", () => {
     expect(state.frozen).toBe(true);
     state = applyEntry(state, control(1, "2026-08-13T10:05:00.000Z", "unfreeze"));
     expect(state.frozen).toBe(false);
+  });
+
+  it("ignores a backdated settled entry that arrives after a later one", () => {
+    let state = emptyState(policy);
+    state = applyEntry(state, payment(0, "2026-08-14T09:00:00.000Z", "490000", "settled"));
+    state = applyEntry(state, payment(1, "2026-08-13T23:59:59.000Z", "10", "settled"));
+    expect(spentInWindow(state, "daily", new Date("2026-08-14T09:01:00.000Z"))).toBe(490_000n);
+  });
+
+  for (const reason of ["", "FREEZE", "freeze ", "rotate-key"]) {
+    it(`leaves frozen true for an unrecognized control reason ${JSON.stringify(reason)}`, () => {
+      let state = emptyState(policy);
+      state = applyEntry(state, control(0, "2026-08-13T10:00:00.000Z", "freeze"));
+      state = applyEntry(state, control(1, "2026-08-13T10:05:00.000Z", reason));
+      expect(state.frozen).toBe(true);
+    });
+  }
+
+  it("accrues by the entry's UTC day even when ts carries a non-Z offset", () => {
+    let state = emptyState(policy);
+    state = applyEntry(state, payment(0, "2026-08-13T23:00:00.000-05:00", "50000", "settled"));
+    expect(spentInWindow(state, "daily", new Date("2026-08-14T00:00:00.000Z"))).toBe(50_000n);
+  });
+
+  it("throws CorruptLogError with the offending seq for a malformed ts", () => {
+    const state = emptyState(policy);
+    let caught: unknown;
+    try {
+      applyEntry(state, payment(3, "not-a-date-at-all", "50000", "settled"));
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(CorruptLogError);
+    expect((caught as CorruptLogError).seq).toBe(3);
+  });
+
+  for (const amountMinor of ["", "0x10", " 500 ", "-1", "1.5", "abc"]) {
+    it(`throws CorruptLogError with the offending seq for a malformed amountMinor ${JSON.stringify(amountMinor)}`, () => {
+      const state = emptyState(policy);
+      let caught: unknown;
+      try {
+        applyEntry(state, payment(4, "2026-08-13T10:00:00.000Z", amountMinor, "settled"));
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(CorruptLogError);
+      expect((caught as CorruptLogError).seq).toBe(4);
+    });
+  }
+
+  it("counts seq internally even when the log carries duplicated seq values", () => {
+    let state = emptyState(policy);
+    state = applyEntry(state, payment(0, "2026-08-13T10:00:00.000Z", "50000", "settled"));
+    state = applyEntry(state, payment(0, "2026-08-13T10:01:00.000Z", "50000", "settled"));
+    expect(state.seq).toBe(2);
   });
 });
 
