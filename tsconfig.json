@@ -4,6 +4,7 @@
     { "path": "packages/core" },
     { "path": "packages/adapter-solana" },
     { "path": "packages/adapter-base" },
-    { "path": "packages/adapter-cloudflare" }
+    { "path": "packages/adapter-cloudflare" },
+    { "path": "examples/demo" }
   ]
 }
