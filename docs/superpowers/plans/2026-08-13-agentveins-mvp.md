@@ -1791,6 +1791,14 @@ After every appended entry — payments and control events alike — seal a fres
 
 Construction failures here throw rather than returning a violation. A tampered environment is not a payment the agent can handle gracefully — it is a refusal to start.
 
+### What the signed anchor does and does not buy
+
+Signing stops an attacker **fabricating** an anchor: without the operator key they cannot name an arbitrary head. It does not stop them **replaying a genuine older one**. An attacker who kept a copy of a real signed anchor from when the head was `seq 1`, restores it, and truncates the log to match passes every check — verified empirically.
+
+That residual is inherent, not a bug to fix here. Detecting rollback needs monotonic state outside both files, and any such state living on the same disk can be rolled back with them. Closing it properly means append-only or remote storage, which is post-MVP.
+
+So the honest claim, and the one the README must make: the audit log detects edits, deletions, reordering, and forgery outright; truncation is detected as long as the anchor is intact; **restoring an older matching snapshot of both files is not detected.** State that limitation plainly rather than letting "tamper-evident" imply more than it delivers.
+
 - [ ] **Step 1: Write the failing tests**
 
 `packages/core/test/guard.test.ts`:
