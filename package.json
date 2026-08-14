@@ -12,7 +12,7 @@
   "scripts": {
     "build": "tsc --build",
     "test": "vitest run",
-    "demo": "npm run demo --workspace=@agentveins/demo"
+    "demo": "npm run demo --workspace=@agentveins/demo --"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
