@@ -129,8 +129,8 @@ async function loadDirectKeypair(): Promise<webcrypto.CryptoKeyPair> {
   if (path === undefined) {
     throw new Error(
       "direct mode needs a funded devnet keypair: set SOLANA_KEYPAIR_PATH to a Solana keypair " +
-        "JSON file (see .env.example — examples/demo/.env is loaded automatically if present), " +
-        "or run with --mock",
+        "JSON file (see examples/demo/.env.example — copy it to examples/demo/.env, which is " +
+        "loaded automatically if present), or run with --mock",
     );
   }
   let raw: string;
@@ -163,8 +163,9 @@ async function runFiveActs(options: DemoOptions, log: Logger): Promise<FiveActSu
     const vendorAddress = process.env["VENDOR_ADDRESS"];
     if (vendorAddress === undefined) {
       throw new Error(
-        "direct mode needs a devnet USDC recipient: set VENDOR_ADDRESS (see .env.example — " +
-          "examples/demo/.env is loaded automatically if present), or run with --mock",
+        "direct mode needs a devnet USDC recipient: set VENDOR_ADDRESS (see " +
+          "examples/demo/.env.example — copy it to examples/demo/.env, which is loaded " +
+          "automatically if present), or run with --mock",
       );
     }
     const rpcUrl = process.env["SOLANA_RPC_URL"] ?? "https://api.devnet.solana.com";

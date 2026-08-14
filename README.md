@@ -87,9 +87,10 @@ and a signed audit log that catches a tampered entry live.
 
 Drop `-- --mock` to run the same five acts as real USDC transfers on Solana devnet — set
 `SOLANA_KEYPAIR_PATH`, `VENDOR_ADDRESS`, and (optionally) `SOLANA_RPC_URL` first, either in your
-shell or in `examples/demo/.env` (copy `.env.example`; loaded automatically if present, never
-committed). `npm run demo -- --x402` runs a separate, sixth act: a vendor quotes more than the
-guard approved, and the adapter refuses to sign before anything moves.
+shell or in `examples/demo/.env` (copy `examples/demo/.env.example` to `examples/demo/.env` and
+fill it in; loaded automatically if present, never committed). `npm run demo -- --x402` runs a
+separate, sixth act: a vendor quotes more than the guard approved, and the adapter refuses to sign
+before anything moves.
 
 ## What AgentVeins is NOT
 
