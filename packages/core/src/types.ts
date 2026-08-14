@@ -138,6 +138,7 @@ export interface Anchor {
   logId: string;
   seq: number;
   hash: string;
+  sig: string;
 }
 
 export interface AnchorStore {
