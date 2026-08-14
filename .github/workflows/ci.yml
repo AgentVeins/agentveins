@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      # Test-only code (packages/*/test) isn't covered by `npm run build`, which compiles
+      # only src. Each package's tsconfig.test.json needs the sibling packages it imports
+      # already built, so this runs after `npm run build`, not before it.
+      - run: npm run typecheck --workspaces
+      - run: npm test
+      # examples/demo has a `predemo` script that runs `npm run build` again via tsc --build;
+      # with the workspace already built above, that's an incremental no-op, not a rebuild.
+      - run: npm run demo -- --mock
