@@ -133,3 +133,14 @@ export type Check = (
   policy: Policy,
   state: SpendState,
 ) => Violation | null;
+
+export interface Anchor {
+  logId: string;
+  seq: number;
+  hash: string;
+}
+
+export interface AnchorStore {
+  read(): Promise<Anchor | null>;
+  write(anchor: Anchor): Promise<void>;
+}
