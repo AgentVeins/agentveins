@@ -98,4 +98,14 @@ describe("CHECKS ordering", () => {
     const first = CHECKS.map((check) => check(hostile, policy, emptyState(policy))).find((v) => v !== null);
     expect(first?.code).toBe("vendor_not_allowed");
   });
+
+  it("contains exactly killSwitchCheck, allowlistCheck, budgetCheck in that order", () => {
+    expect(CHECKS).toEqual([killSwitchCheck, allowlistCheck, budgetCheck]);
+  });
+
+  it("reports budget_exceeded when it is the only rule that fires", () => {
+    const overBudget = ctx({ amountMinor: 250_000n });
+    const first = CHECKS.map((check) => check(overBudget, policy, emptyState(policy))).find((v) => v !== null);
+    expect(first?.code).toBe("budget_exceeded");
+  });
 });
