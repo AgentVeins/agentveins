@@ -22,7 +22,7 @@ Every payment your agent attempts passes through the guard **before money moves*
 |---|---|
 | **Allowlist** | Is this vendor approved by the owner? |
 | **Budget** | Is it within per-payment / daily / periodic limits? |
-| **Velocity** | Is this normal behavior, or a runaway loop? |
+| **Velocity** *(roadmap)* | Is this normal behavior, or a runaway loop? |
 | **Kill switch** | Is this agent still authorized at all? |
 
 Payments that pass proceed untouched — the agent never notices. Payments that fail return a structured violation the agent can handle gracefully. Every attempt, allowed or blocked, lands in a tamper-evident audit log: what was paid, to whom, when, and the stated reason.
@@ -32,7 +32,8 @@ Corporate card controls, for AI agents.
 ## Quickstart
 
 ```typescript
-import { createGuard, Policy } from "@agentveins/core";
+import { createGuard, fileAuditSink, type Policy } from "@agentveins/core";
+import { solanaAdapter } from "@agentveins/adapter-solana";
 
 const policy: Policy = {
   budgets: [
@@ -40,28 +41,32 @@ const policy: Policy = {
     { period: "per_tx", limit: "1.00", currency: "USDC" },
   ],
   vendors: { mode: "allowlist", entries: ["api.weather.com"] },
-  killSwitch: { enabled: true },
+  killSwitch: { frozen: false },
 };
 
-const guard = createGuard({
+const guard = await createGuard({
   policy,
-  chain: solanaAdapter({ keypair }),
+  agent: "research-agent",
+  adapters: [solanaAdapter({ keypair, rpcUrl, mode: "x402" })],
   audit: fileAuditSink("./audit.jsonl"),
+  signingKey,
 });
 
 // Wrap your agent's payment path — the only integration point
 const result = await guard.pay({
-  to: "api.weather.com",
+  to: "https://api.weather.com/forecast",
   amount: "0.05",
   currency: "USDC",
   reason: "forecast query",
 });
-// { status: "settled" | "blocked", violation?, txSig?, auditId }
+// { status: "settled" | "blocked" | "failed", txSig?, violation?, error?, auditId }
 
 await guard.freeze(); // emergency stop, instantly
 ```
 
-Integration target: under 10 minutes from `npm install` to your first governed payment.
+`signingKey` is an ed25519 private key you own (`generateKeyPairSync("ed25519")`); it signs audit entries and never leaves your process.
+
+Integration target: under 10 minutes from `npm install` to your first governed payment. The guard, policy engine, and signed audit log are live today; `@agentveins/adapter-solana` is still landing — track it on the roadmap below.
 
 ## What AgentVeins is NOT
 
@@ -75,13 +80,13 @@ It sits between your agent and its money. Every wallet, rail, and framework is a
 
 - **Policy is data, not code** — JSON-serializable, versionable, diffable; dashboards can edit it without SDK changes
 - **Chain adapters** — Solana first (devnet live), Base next; policy logic never touches chain code
-- **Blocked ≠ thrown** — structured violations so agents can retry a cheaper vendor or escalate to a human
-- **Audit log** — append-only JSONL with signed entries; boring, dependency-free, verifiable
+- **Blocked ≠ thrown** — structured violations so agents can retry a cheaper vendor or escalate to a human; rail errors return `failed` separately, so a network hiccup never looks like a policy denial
+- **Audit log** — append-only JSONL with hash-chained, signed entries; boring, dependency-free, verifiable. It detects edits, deletions, reordering, and forged entries outright, and detects truncation as long as the signed anchor file survives. Restoring an older matching snapshot of *both* the log and its anchor is not detected — closing that needs append-only or remote storage, which is post-MVP.
 
 ## Roadmap
 
 - [x] Policy engine: budgets, allowlist, kill switch
-- [x] Solana devnet payment path (x402)
+- [ ] Solana devnet payment path (x402)
 - [x] Signed audit log
 - [ ] Base adapter
 - [ ] Velocity rules
