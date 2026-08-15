@@ -4,6 +4,15 @@
   "description": "Spend governance for AI agents: budgets, allowlists, kill switch, signed audit log.",
   "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AgentVeins/agentveins.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://github.com/AgentVeins/agentveins#readme",
+  "bugs": "https://github.com/AgentVeins/agentveins/issues",
+  "keywords": ["ai-agents", "payments", "policy", "audit-log", "x402", "spend-controls"],
+  "engines": { "node": ">=20" },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {

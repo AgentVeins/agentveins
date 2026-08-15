@@ -1,6 +1,8 @@
 {
   "name": "@agentveins/adapter-base",
   "version": "0.0.1",
+  "description": "Interface stub for a future AgentVeins Base adapter. Not implemented.",
+  "private": true,
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",

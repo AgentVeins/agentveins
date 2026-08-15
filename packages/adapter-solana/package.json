@@ -1,10 +1,23 @@
 {
   "name": "@agentveins/adapter-solana",
   "version": "0.0.1",
+  "description": "Solana wallet adapter for AgentVeins: USDC settlement on devnet, direct or x402.",
   "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AgentVeins/agentveins.git",
+    "directory": "packages/adapter-solana"
+  },
+  "homepage": "https://github.com/AgentVeins/agentveins#readme",
+  "bugs": "https://github.com/AgentVeins/agentveins/issues",
+  "keywords": ["ai-agents", "payments", "solana", "usdc", "x402", "spend-controls"],
+  "engines": { "node": ">=20" },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
   "files": [
     "dist"
   ],
