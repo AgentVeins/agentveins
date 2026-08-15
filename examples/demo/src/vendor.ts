@@ -67,9 +67,9 @@ export function createVendorApp(options: VendorOptions): express.Express {
     }
 
     // Stub only: the demo settles in direct mode and never sends X-PAYMENT to this vendor. Real
-    // settlement would need this vendor's own funded keypair and a facilitator implementation —
-    // see docs/superpowers/plans/2026-08-13-agentveins-mvp.md for the price-mismatch guard this
-    // server exists to demonstrate instead.
+    // settlement would need this vendor's own funded keypair and a facilitator implementation, so
+    // this server exists to demonstrate the price-mismatch guard instead — it quotes above the
+    // approved amount and the adapter refuses to sign.
     res.setHeader("x-payment-response", `demo-${transaction.slice(0, 12)}`);
     res.status(200).json({ forecast: "22C, light rain", issuedAt: new Date().toISOString() });
   });
