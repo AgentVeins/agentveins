@@ -6,6 +6,7 @@ audit.jsonl
 operator.key.pem
 .superpowers/
 docs/superpowers/*
+CLAUDE.md
 
 # Generated strategy artifacts — not part of the package
 .superstack/
