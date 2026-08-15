@@ -140,6 +140,6 @@ Cloudflare measured bot traffic passing 57% of web requests in mid-2026, driven 
 
 ## Status
 
-Early and moving fast. Built on Solana (Alpenglow-era, ~150ms finality) by a builder in the Superteam Malaysia ecosystem. Issues, PRs, and hard questions welcome.
+Early and moving fast. Built on Solana (Alpenglow-era, ~150ms finality). Issues, PRs, and hard questions welcome.
 
 **agentveins.com** · MIT License

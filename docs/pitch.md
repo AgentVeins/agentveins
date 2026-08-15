@@ -161,7 +161,7 @@ a non-engineer set the policy.
 **If you are judging this:** run `npm run demo -- --mock`. It needs no network, no keys,
 and no accounts, and it ends by catching a forged record live.
 
-**agentveins.com** · MIT License · Built on Solana, in the Superteam Malaysia ecosystem
+**agentveins.com** · MIT License · Built on Solana
 
 ---
 ---
