@@ -50,6 +50,7 @@ export interface Violation {
 export type PaymentErrorCode =
   | "adapter_error"
   | "price_mismatch"
+  | "recipient_not_allowed"
   | "insufficient_funds"
   | "timeout";
 

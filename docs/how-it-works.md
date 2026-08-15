@@ -49,7 +49,7 @@ Only if all three pass does the adapter run and money move.
 
 - **`settled`** — money moved and the transaction is confirmed on chain.
 - **`blocked`** — policy said no. Codes: `kill_switch`, `vendor_not_allowed`, `budget_exceeded`, `invalid_request`, `audit_unavailable`. Retrying the same payment will fail the same way; the agent should adapt (cheaper vendor, escalate to a human, stop).
-- **`failed`** — the rail failed, not the policy. Codes: `adapter_error`, `price_mismatch`, `insufficient_funds`, `timeout`. This may be worth retrying — with one important exception, below.
+- **`failed`** — the rail failed, not the policy. Codes: `adapter_error`, `price_mismatch`, `recipient_not_allowed`, `insufficient_funds`, `timeout`. Some of these are worth retrying and some are not: `price_mismatch` and `recipient_not_allowed` mean the vendor asked for something you did not approve, so retrying hits the same refusal. See also the `timeout` exception below.
 
 Keeping `blocked` and `failed` apart is deliberate. Collapsing them would leave an agent unable to tell "you are out of budget, stop" from "the network hiccuped, try again."
 

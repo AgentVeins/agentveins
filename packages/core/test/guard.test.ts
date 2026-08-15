@@ -210,6 +210,24 @@ describe("guard.pay", () => {
     expect(guard.state().windows["daily:2026-08-13"]?.spentMinor ?? 0n).toBe(0n);
   });
 
+  it("preserves a recipient refusal as its own code so a retry loop can tell it apart", async () => {
+    const adapter = fakeAdapter({
+      execute: vi.fn(async () => {
+        throw Object.assign(new Error("the endpoint named a recipient that is not on the allowlist"), {
+          code: "recipient_not_allowed",
+        });
+      }),
+    });
+    const { guard, sink } = await guardWith(adapter);
+    const result = await guard.pay(request);
+    expect(result.status).toBe("failed");
+    if (result.status === "failed") {
+      expect(result.error.code).toBe("recipient_not_allowed");
+    }
+    expect(sink.entries.at(-1)!.error?.code).toBe("recipient_not_allowed");
+    expect(guard.state().windows["daily:2026-08-13"]?.spentMinor ?? 0n).toBe(0n);
+  });
+
   it("treats a receipt without a transaction signature as failed", async () => {
     const adapter = fakeAdapter({
       execute: vi.fn(async () => ({ rail: "fake" }) as unknown as SettlementReceipt),

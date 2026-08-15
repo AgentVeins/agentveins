@@ -76,7 +76,11 @@ function toPaymentError(error: unknown): PaymentError {
     unconfirmedSignature?: unknown;
   };
   const code = fields.code;
-  const known = code === "price_mismatch" || code === "insufficient_funds" || code === "timeout";
+  const known =
+    code === "price_mismatch" ||
+    code === "recipient_not_allowed" ||
+    code === "insufficient_funds" ||
+    code === "timeout";
   const paymentError: PaymentError = {
     code: known ? code : "adapter_error",
     message: messageOf(error),
