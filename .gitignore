@@ -5,6 +5,8 @@ dist/
 audit.jsonl
 operator.key.pem
 .superpowers/
+docs/
 
 # Generated strategy artifacts — not part of the package
 .superstack/
+
