@@ -22,12 +22,21 @@ Every payment your agent attempts passes through the guard **before money moves*
 |---|---|
 | **Allowlist** | Is this vendor approved by the owner? |
 | **Budget** | Is it within per-payment / daily / periodic limits? |
-| **Velocity** *(roadmap)* | Is this normal behavior, or a runaway loop? |
+| **Recipients** | Is the money going to an address you approved, not one the vendor named? |
 | **Kill switch** | Is this agent still authorized at all? |
+| **Velocity** *(roadmap)* | Is this normal behavior, or a runaway loop? |
 
 Payments that pass proceed untouched — the agent never notices. Payments that fail return a structured violation the agent can handle gracefully. Every attempt, allowed or blocked, lands in a tamper-evident audit log: what was paid, to whom, when, and the stated reason.
 
 Corporate card controls, for AI agents.
+
+## Install
+
+```bash
+npm install @agentveins/core @agentveins/adapter-solana
+```
+
+`@agentveins/core` has **zero runtime dependencies** — it is the policy engine and the audit log, and it knows nothing about any chain. The Solana adapter ships separately so a project governing a different rail never installs 47MB of Solana and x402 machinery it will not call.
 
 ## Quickstart
 
@@ -81,7 +90,7 @@ Integration target: under 10 minutes from `npm install` to your first governed p
 ## See it work
 
 ```
-git clone <this repo> && cd agentveins
+git clone https://github.com/AgentVeins/agentveins.git && cd agentveins
 npm install
 npm run demo -- --mock
 ```
