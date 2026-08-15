@@ -143,6 +143,37 @@ describe("guard.pay", () => {
     }
   });
 
+  it("hands the adapter the policy's recipient allowlist", async () => {
+    const adapter = fakeAdapter();
+    const guard = await createGuard({
+      policy: { ...policy(), recipients: { mode: "allowlist", entries: ["9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"] } },
+      adapters: [adapter],
+      audit: memoryAuditSink(),
+      agent: "demo-agent",
+      logId: LOG_ID,
+      signingKey: keys.privateKey,
+      now: clock,
+    });
+
+    await guard.pay(request);
+
+    expect(adapter.execute).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        allowedRecipients: ["9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"],
+      }),
+    );
+  });
+
+  it("leaves allowedRecipients undefined when the policy names none", async () => {
+    const adapter = fakeAdapter();
+    const { guard } = await guardWith(adapter);
+
+    await guard.pay(request);
+
+    const sent = (adapter.execute as unknown as { mock: { calls: SettlementRequest[][] } }).mock.calls[0]?.[0];
+    expect(sent?.allowedRecipients).toBeUndefined();
+  });
+
   it("never calls the adapter on a blocked payment", async () => {
     const adapter = fakeAdapter();
     const { guard } = await guardWith(adapter);

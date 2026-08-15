@@ -4,8 +4,8 @@ import type { Policy } from "@agentveins/core";
 import { safeBase64Encode } from "@x402/core/utils";
 import { describe, expect, it, vi } from "vitest";
 import {
-  ConfirmationTimeoutError, PriceMismatchError, TransactionNotConfirmedError, confirmSignature,
-  solanaAdapter,
+  ConfirmationTimeoutError, PriceMismatchError, RecipientNotAllowedError,
+  TransactionNotConfirmedError, confirmSignature, solanaAdapter,
 } from "../src/index.js";
 import type { SignatureStatus } from "../src/index.js";
 
@@ -57,7 +57,45 @@ function buildSpy() {
   return vi.fn(async () => signedTransfer);
 }
 
+function paidResponse(): Response {
+  return new Response(JSON.stringify({ data: "ok" }), {
+    status: 200,
+    headers: {
+      "content-type": "application/json",
+      "x-payment-response": safeBase64Encode(
+        JSON.stringify({
+          success: true,
+          transaction: SETTLED_SIG,
+          network: "solana-devnet",
+          payer: PAY_TO,
+        }),
+      ),
+    },
+  });
+}
+
 describe("solanaAdapter", () => {
+  it("refuses an x402 quote whose recipient the policy did not approve", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(quoteResponse("50000"))
+      .mockResolvedValueOnce(paidResponse());
+    const buildX402Transfer = vi.fn(async () => x402Transfer);
+    const adapter = solanaAdapter({ ...config, mode: "x402", fetchImpl, buildX402Transfer });
+
+    await expect(
+      adapter.execute({
+        to: "https://api.weather.com/forecast",
+        amountMinor: 50_000n,
+        reason: "forecast",
+        allowedRecipients: [FEE_PAYER],
+      }),
+    ).rejects.toThrow(RecipientNotAllowedError);
+
+    expect(buildX402Transfer).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it("reports its name and currency", () => {
     const adapter = solanaAdapter({ ...config, mode: "direct" });
     expect(adapter.name).toBe("solana");

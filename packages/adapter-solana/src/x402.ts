@@ -32,11 +32,28 @@ export class PriceMismatchError extends Error {
   }
 }
 
+export class RecipientNotAllowedError extends Error {
+  readonly code = "recipient_not_allowed";
+  /** Named by the endpoint, so untrusted: carried here rather than in the message. */
+  readonly payTo: string;
+  constructor(payTo: string) {
+    super("the endpoint named a recipient that is not on the allowlist");
+    this.name = "RecipientNotAllowedError";
+    this.payTo = payTo;
+  }
+}
+
 export interface FacilitatorInput {
   vendorUrl: string;
   approvedAmountMinor: bigint;
   /** The only mint this adapter will pay in; a quote naming any other asset is refused. */
   expectedAsset: string;
+  /**
+   * The addresses the policy approved as recipients. A quote naming anything else is refused
+   * before signing. Omitted means the recipient is ungoverned — the amount is still checked,
+   * but a hijacked endpoint can redirect the money.
+   */
+  allowedRecipients?: readonly string[];
   /** Called only after the quote clears every check, so a rejected quote never gets signed. */
   signTransfer: (request: X402TransferRequest) => Promise<X402Transfer>;
   network?: string;
@@ -68,12 +85,16 @@ export async function settleViaFacilitator(input: FacilitatorInput): Promise<Set
   if (accepted.asset !== input.expectedAsset) {
     throw new Error("the endpoint quoted an asset this adapter is not configured to pay");
   }
-  // TODO: policy governs the vendor URL, not this address. An allowlisted endpoint that has been
-  // compromised or hijacked can name any recipient at or under the approved amount and the payment
-  // still reads as governed. `isAddress` proves the address is well formed, never that it is the
-  // vendor's. Closing this needs a recipient allowlist or a signed vendor identity in the policy.
+  // `isAddress` proves the address is well formed, never that it is the vendor's: policy governs
+  // the vendor URL, and the money goes wherever the quote's `payTo` names. Without
+  // `allowedRecipients` a compromised or hijacked endpoint can still redirect any amount at or
+  // under the approval, and the allowlist, the budget and the audit log all record a normal
+  // governed payment. Base58 is case-sensitive, so these compare exactly.
   if (!isAddress(accepted.payTo)) {
     throw new Error("the endpoint quoted an unusable solana payment address");
+  }
+  if (input.allowedRecipients !== undefined && !input.allowedRecipients.includes(accepted.payTo)) {
+    throw new RecipientNotAllowedError(accepted.payTo);
   }
 
   const signed = await input.signTransfer({

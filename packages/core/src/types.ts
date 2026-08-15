@@ -12,6 +12,11 @@ export interface VendorPolicy {
   entries: string[];
 }
 
+export interface RecipientPolicy {
+  mode: "allowlist";
+  entries: string[];
+}
+
 export interface KillSwitch {
   frozen: boolean;
 }
@@ -19,6 +24,13 @@ export interface KillSwitch {
 export interface Policy {
   budgets: Budget[];
   vendors: VendorPolicy;
+  /**
+   * The destinations an adapter may pay. The vendor allowlist governs who is asked for a price;
+   * this governs who ends up holding the money, which on a quoted rail like x402 is not the same
+   * question. Omitting it leaves the recipient ungoverned: an allowlisted endpoint that has been
+   * compromised can name any destination at or under the approved amount.
+   */
+  recipients?: RecipientPolicy;
   killSwitch: KillSwitch;
 }
 
@@ -68,6 +80,12 @@ export interface SettlementRequest {
   to: string;
   amountMinor: bigint;
   reason: string;
+  /**
+   * The destinations `policy.recipients` approved, or undefined when the policy names none.
+   * On a rail where the payee is quoted rather than addressed — x402 names it in the 402
+   * response — the adapter must refuse anything outside this list before it signs.
+   */
+  allowedRecipients?: readonly string[];
 }
 
 export interface SettlementReceipt {

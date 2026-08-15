@@ -18,6 +18,18 @@ describe("validatePolicy", () => {
     expect(() => validatePolicy(valid())).not.toThrow();
   });
 
+  it("rejects an empty recipient allowlist", () => {
+    const p = valid();
+    p.recipients = { mode: "allowlist", entries: [] };
+    expect(() => validatePolicy(p)).toThrow(/recipient/);
+  });
+
+  it("rejects a blank recipient entry", () => {
+    const p = valid();
+    p.recipients = { mode: "allowlist", entries: ["   "] };
+    expect(() => validatePolicy(p)).toThrow(/recipient/);
+  });
+
   it("rejects an unknown budget period", () => {
     const p = valid();
     (p.budgets[0] as { period: string }).period = "weekly";

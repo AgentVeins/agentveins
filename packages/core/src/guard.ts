@@ -366,7 +366,12 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
     let txSig: string;
     let rail: string;
     try {
-      const receipt = await adapter.execute({ to: req.to, amountMinor, reason: req.reason });
+      const receipt = await adapter.execute({
+        to: req.to,
+        amountMinor,
+        reason: req.reason,
+        ...(policy.recipients === undefined ? {} : { allowedRecipients: policy.recipients.entries }),
+      });
       if (receipt === null || typeof receipt !== "object" || typeof receipt.txSig !== "string" || receipt.txSig === "") {
         throw new TypeError(`adapter ${adapter.name} returned no transaction signature`);
       }

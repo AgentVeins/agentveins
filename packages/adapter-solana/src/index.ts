@@ -76,13 +76,18 @@ export function solanaAdapter(config: SolanaAdapterConfig): WalletAdapter {
       }
 
       if (config.mode === "x402") {
-        // Nothing is signed until the 402 quote clears the price check, so `req.to` here is the
-        // vendor's URL and the on-chain destination comes from the quote's `payTo`.
+        // Nothing is signed until the 402 quote clears every check, so `req.to` here is the
+        // vendor's URL and the on-chain destination comes from the quote's `payTo`. That
+        // destination is governed only when the policy names recipients; without them the
+        // amount is checked and the payee is not.
         return settleViaFacilitator({
           vendorUrl: req.to,
           approvedAmountMinor: req.amountMinor,
           expectedAsset: usdcMint,
           signTransfer: buildX402,
+          ...(req.allowedRecipients === undefined
+            ? {}
+            : { allowedRecipients: req.allowedRecipients }),
           ...(config.timeoutMs === undefined ? {} : { timeoutMs: config.timeoutMs }),
           ...(config.fetchImpl === undefined ? {} : { fetchImpl: config.fetchImpl }),
         });
@@ -122,6 +127,6 @@ export {
   confirmSignature,
 } from "./direct.js";
 export type { ConfirmDeps } from "./direct.js";
-export { PriceMismatchError, settleViaFacilitator } from "./x402.js";
+export { PriceMismatchError, RecipientNotAllowedError, settleViaFacilitator } from "./x402.js";
 export type { FacilitatorInput } from "./x402.js";
 export type { ConfirmationLevel, SignatureStatus } from "./direct.js";

@@ -7,6 +7,8 @@ import { PriceMismatchError, settleViaFacilitator } from "../src/x402.js";
 const VENDOR_URL = "https://api.weather.com/forecast";
 const PAY_TO = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM";
 const FEE_PAYER = "3Nb2Y5aMBpqZ1vPnJLnHYxTFkGiwGXVQxHwR9nrqYzQd";
+/** A well-formed address that is not the vendor's — what a hijacked endpoint would name. */
+const ATTACKER = "So11111111111111111111111111111111111111112";
 const USDC = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
 const SETTLED_SIG =
   "5VERv8NMvzbJMEkV8xnrLkEaWRtSz9CosKDYjCJjBRnbJLgp8uirBgmQpjKhoR4tjF3ZpRzrFmBV6UjKdiSZkQUW";
@@ -108,6 +110,28 @@ describe("settleViaFacilitator", () => {
       feePayer: FEE_PAYER,
       memo: "order-1234",
     });
+  });
+
+  it("refuses a quote naming a recipient off the allowlist and signs nothing", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(response(402, quote({ payTo: ATTACKER })))
+      .mockResolvedValueOnce(paid(settlement({ success: true, transaction: SETTLED_SIG })));
+    const signTransfer = signTransferSpy();
+
+    await expect(
+      settleViaFacilitator({
+        vendorUrl: VENDOR_URL,
+        approvedAmountMinor: 50_000n,
+        expectedAsset: USDC,
+        signTransfer,
+        fetchImpl,
+        allowedRecipients: [PAY_TO],
+      }),
+    ).rejects.toThrow(/recipient/i);
+
+    expect(signTransfer).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("times out both requests instead of hanging on a silent vendor", async () => {
