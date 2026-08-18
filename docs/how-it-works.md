@@ -6,7 +6,7 @@ What the code in this repo actually does today, including what it does **not** d
 
 ## The idea in one paragraph
 
-An AI agent with a wallet can spend money. AgentVeins sits between the agent and its money: the agent calls `guard.pay()` instead of paying directly, and the guard decides whether the payment happens. Every attempt — allowed or refused — is appended to a signed, hash-chained log. The guard holds no funds and moves no money itself; a **wallet adapter** does that, and the policy engine has no idea what a blockchain is.
+An AI agent with a wallet can spend money. AgentVeins sits between the agent and its money: the agent calls `guard.pay()` instead of paying directly, and the guard decides whether the payment happens. Every attempt, allowed or refused, is appended to a signed, hash-chained log. The guard holds no funds and moves no money itself; a **wallet adapter** does that, and the policy engine has no idea what a blockchain is.
 
 ## The only integration point
 
@@ -19,7 +19,7 @@ const result = await guard.pay({
 });
 ```
 
-That is the entire surface an agent touches. Everything else — policy, budgets, the log, the kill switch — is configuration the operator sets up once.
+That is the entire surface an agent touches. Everything else, policy, budgets, the log, the kill switch, is configuration the operator sets up once.
 
 ## What happens on a payment
 
@@ -31,7 +31,7 @@ The guard evaluates checks **in a fixed order**, and the first failure stops eve
 | 2 | Allowlist | Is this vendor approved? |
 | 3 | Budget | Is this within the per-transaction and daily limits? |
 
-The order is a security property, not a style choice. A frozen agent paying an unapproved vendor reports `kill_switch`, not `vendor_not_allowed` — you learn the most fundamental reason first.
+The order is a security property, not a style choice. A frozen agent paying an unapproved vendor reports `kill_switch`, not `vendor_not_allowed`: you learn the most fundamental reason first.
 
 **A refused payment never reaches an adapter.** The guard returns before any network call, so no transaction is built, signed, or broadcast. A test asserts exactly this for every refusal reason.
 
@@ -47,15 +47,15 @@ Only if all three pass does the adapter run and money move.
 { status: "failed";   error: PaymentError;  auditId: string }
 ```
 
-- **`settled`** — money moved and the transaction is confirmed on chain.
-- **`blocked`** — policy said no. Codes: `kill_switch`, `vendor_not_allowed`, `budget_exceeded`, `invalid_request`, `audit_unavailable`. Retrying the same payment will fail the same way; the agent should adapt (cheaper vendor, escalate to a human, stop).
-- **`failed`** — the rail failed, not the policy. Codes: `adapter_error`, `price_mismatch`, `recipient_not_allowed`, `insufficient_funds`, `timeout`. Some of these are worth retrying and some are not: `price_mismatch` and `recipient_not_allowed` mean the vendor asked for something you did not approve, so retrying hits the same refusal. See also the `timeout` exception below.
+- **`settled`**: money moved and the transaction is confirmed on chain.
+- **`blocked`**: policy said no. Codes: `kill_switch`, `vendor_not_allowed`, `budget_exceeded`, `invalid_request`, `audit_unavailable`. Retrying the same payment will fail the same way; the agent should adapt (cheaper vendor, escalate to a human, stop).
+- **`failed`**: the rail failed, not the policy. Codes: `adapter_error`, `price_mismatch`, `recipient_not_allowed`, `insufficient_funds`, `timeout`. Some of these are worth retrying and some are not: `price_mismatch` and `recipient_not_allowed` mean the vendor asked for something you did not approve, so retrying hits the same refusal. See also the `timeout` exception below.
 
 Keeping `blocked` and `failed` apart is deliberate. Collapsing them would leave an agent unable to tell "you are out of budget, stop" from "the network hiccuped, try again."
 
 ## Policy is data
 
-A policy is a plain JSON-serialisable object. No code, no callbacks — so it can be versioned, diffed, and eventually edited by a dashboard without touching the SDK.
+A policy is a plain JSON-serialisable object. No code, no callbacks, so it can be versioned, diffed, and eventually edited by a dashboard without touching the SDK.
 
 ```ts
 const policy: Policy = {
@@ -68,11 +68,11 @@ const policy: Policy = {
 };
 ```
 
-`validatePolicy` rejects malformed shapes **at construction time** — unknown periods, duplicate periods, unparseable or negative limits, over-precise amounts, an empty allowlist, a non-boolean kill switch. Bad configuration fails immediately and loudly; bad payments fail softly with a structured violation.
+`validatePolicy` rejects malformed shapes **at construction time**: unknown periods, duplicate periods, unparseable or negative limits, over-precise amounts, an empty allowlist, a non-boolean kill switch. Bad configuration fails immediately and loudly; bad payments fail softly with a structured violation.
 
 **Money is never a floating-point number.** Limits are decimal strings at the API boundary (`"25.00"`), parsed exactly once into `bigint` minor units, and stay `bigint` everywhere after that. USDC has 6 decimals, and amounts up to the u64 maximum survive the round trip byte-exact.
 
-**Budget windows are UTC calendar days**, keyed as `daily:YYYY-MM-DD`. Not local time, not a rolling 24 hours. Only `settled` payments consume budget — refused and failed attempts are logged but never counted.
+**Budget windows are UTC calendar days**, keyed as `daily:YYYY-MM-DD`. Not local time, not a rolling 24 hours. Only `settled` payments consume budget: refused and failed attempts are logged but never counted.
 
 ## Where the spend counter lives
 
@@ -80,7 +80,7 @@ There isn't one. That is the design.
 
 On startup the guard **replays the audit log** and reconstructs both the spend totals and the frozen state from it. There is no separate counter file that could drift from the record, and restarting an agent cannot reset its budget, because the budget *is* the log.
 
-This is also why the log's integrity matters so much — it is not just evidence, it is enforcement.
+This is also why the log's integrity matters so much: it is not just evidence, it is enforcement.
 
 ## The audit log
 
@@ -94,7 +94,7 @@ sig      ← ed25519 over "agentveins.audit.v1\n" + hash
 
 Each entry records the timestamp, agent, vendor (raw and normalised), rail, amount, reason, outcome, any violation or error, and the transaction signature.
 
-`verifyAuditLog()` is exported so anyone — you, an auditor, a grant reviewer — can check a log independently.
+`verifyAuditLog()` is exported so anyone, you, an auditor, a grant reviewer, can check a log independently.
 
 ### What it detects
 
@@ -111,7 +111,7 @@ Each entry records the timestamp, agent, vendor (raw and normalised), rail, amou
 
 Truncation is the hard one: a strict prefix of a valid chain is itself a valid chain, so the log cannot detect its own tail being cut. And because spend replays from the log, deleting trailing lines would silently restore budget.
 
-So the guard keeps a tiny out-of-band **anchor** — a signed record of the log's expected head — written after every append and checked at startup. A truncated log no longer reaches the anchored position, and the guard refuses to start.
+So the guard keeps a tiny out-of-band **anchor**, a signed record of the log's expected head, written after every append and checked at startup. A truncated log no longer reaches the anchored position, and the guard refuses to start.
 
 The guard fails closed on every ambiguous case: an absent anchor beside a non-empty log, a bad anchor signature, a `logId` mismatch, or a log that ends short of the anchor all throw at construction rather than being treated as a fresh start.
 
@@ -119,43 +119,43 @@ The guard fails closed on every ambiguous case: an absent anchor beside a non-em
 
 Stated plainly, because "tamper-evident" should not imply more than it delivers:
 
-- **Delete the anchor and truncation becomes undetectable again.** An unauthenticated file on the same disk can always be removed. The guard refuses to start when the anchor is missing but the log is not — but if both go, it looks like a first run.
-- **Rolling *both* files back to an older matching snapshot is not detected.** Signing stops an attacker *fabricating* an anchor; it does not stop them replaying a genuine older one alongside a matching log. Detecting that needs monotonic state outside both files, and same-disk state rolls back with them. Closing it properly means append-only or remote storage — post-MVP.
+- **Delete the anchor and truncation becomes undetectable again.** An unauthenticated file on the same disk can always be removed. The guard refuses to start when the anchor is missing but the log is not, but if both go, it looks like a first run.
+- **Rolling *both* files back to an older matching snapshot is not detected.** Signing stops an attacker *fabricating* an anchor; it does not stop them replaying a genuine older one alongside a matching log. Detecting that needs monotonic state outside both files, and same-disk state rolls back with them. Closing it properly means append-only or remote storage: post-MVP.
 
 ## The kill switch
 
 `freeze()` closes the switch **immediately in memory**, so the very next `pay()` is already blocked, and queues its control entry to the log behind whatever payment was in flight. That ordering is deliberate: an emergency stop should not wait on a rail call that might take 90 seconds.
 
-The trade-off is that `freeze()` resolves before its entry is durable. `flush()` exists to wait for that, and you should call it before exiting a process that just froze — otherwise a crash inside that window loses the record, and a restart replays as unfrozen.
+The trade-off is that `freeze()` resolves before its entry is durable. `flush()` exists to wait for that, and you should call it before exiting a process that just froze: otherwise a crash inside that window loses the record, and a restart replays as unfrozen.
 
 Freezing is **sticky from either source**: a policy set to `frozen: true` cannot be defeated by a stale `unfreeze` in the log, and `unfreeze()` refuses to clear a policy-level freeze. Both directions resolve toward more restrictive.
 
 ## When the log cannot be written
 
-A governance tool that cannot record cannot authorise. If an audit write fails — disk full, read-only mount, a remote sink down — the guard **latches closed**: every later `pay()` returns `blocked` with `audit_unavailable` before touching an adapter.
+A governance tool that cannot record cannot authorise. If an audit write fails, disk full, read-only mount, a remote sink down, the guard **latches closed**: every later `pay()` returns `blocked` with `audit_unavailable` before touching an adapter.
 
 Two honest caveats:
 
 - **Latched refusals leave no trace.** They produce no audit entry and their `auditId` is the empty string, so an operator reconciling the log cannot tell whether one payment or ten thousand were refused while the sink was down.
 - **The latch is process-scoped.** A restart clears it, so with a persistently dead sink each fresh process authorises exactly one payment before latching again.
 
-If a payment settles on chain and only the *recording* fails, the guard still returns `settled` with the real signature — it will not tell you money stayed put when it did not — and then latches.
+If a payment settles on chain and only the *recording* fails, the guard still returns `settled` with the real signature, it will not tell you money stayed put when it did not, and then latches.
 
 ## Settlement on Solana
 
 `@agentveins/adapter-solana` implements the `WalletAdapter` interface twice over one shared signing path.
 
-### `direct` mode — proven, and what the demo uses
+### `direct` mode: proven, and what the demo uses
 
 Builds an SPL USDC transfer, signs it, submits it, and then **waits for confirmation** by polling `getSignatureStatuses`, bounded by the transaction's `lastValidBlockHeight` and by a wall clock (90s) and attempt ceiling (300) you can configure.
 
-Confirmation is not optional detail. `sendTransaction` returns as soon as a node *accepts* the transaction, which is not the same as it landing — blockhash expiry and congestion drops are ordinary on Solana. Returning success at acceptance would record `settled` for money that never moved and burn budget permanently, with no reversal path.
+Confirmation is not optional detail. `sendTransaction` returns as soon as a node *accepts* the transaction, which is not the same as it landing: blockhash expiry and congestion drops are ordinary on Solana. Returning success at acceptance would record `settled` for money that never moved and burn budget permanently, with no reversal path.
 
-If confirmation times out while the transaction is still plausibly in flight, the guard records a fourth audit outcome — **`uncertain`** — carrying the signature, and **consumes the budget** while returning `failed` with `error.code: "timeout"` and `error.txSig`. Rounding against the agent is deliberate: it can never under-count, so a retry that moves money a second time is matched by a second budget unit.
+If confirmation times out while the transaction is still plausibly in flight, the guard records a fourth audit outcome, **`uncertain`**, carrying the signature, and **consumes the budget** while returning `failed` with `error.code: "timeout"` and `error.txSig`. Rounding against the agent is deliberate: it can never under-count, so a retry that moves money a second time is matched by a second budget unit.
 
 > ⚠️ **Sharp edge.** An agent that retries on a bare `status === "failed"` without inspecting `error.code` will spend budget twice for one uncertain payment. Check the code.
 
-### `x402` mode — spec-conforming, not yet settled live
+### `x402` mode: spec-conforming, not yet settled live
 
 x402 is the HTTP 402 payment protocol. The agent requests a resource, receives a `402` quote, and pays by attaching a signed transaction in an `X-PAYMENT` header.
 
@@ -173,14 +173,14 @@ One limit worth knowing: **policy governs the vendor URL, not the recipient.** T
 |---|---|
 | `@agentveins/core` | Working. Zero runtime dependencies. |
 | `@agentveins/adapter-solana` | Working. `direct` settles and confirms; `x402` builds valid payloads, unverified against a live facilitator. |
-| `@agentveins/adapter-base` | Stub — throws `NotImplementedError` **at construction**. |
-| `@agentveins/adapter-cloudflare` | Stub — same. |
+| `@agentveins/adapter-base` | Stub: throws `NotImplementedError` **at construction**. |
+| `@agentveins/adapter-cloudflare` | Stub: same. |
 
 The stubs throw when you build them, not when you pay. A stub that returns an object and fails later is exactly the thing that gets mistaken for working code.
 
 ## The demo
 
-`npm run demo -- --mock` runs offline in five acts: the policy, ten normal payments, three refusals (per-transaction cap, unapproved vendor, daily budget exhausted), the kill switch, then the proof — it prints the log, verifies it, then alters one entry and shows verification failing at that sequence number.
+`npm run demo -- --mock` runs offline in five acts: the policy, ten normal payments, three refusals (per-transaction cap, unapproved vendor, daily budget exhausted), the kill switch, then the proof. It prints the log, verifies it, then alters one entry and shows verification failing at that sequence number.
 
 The tamper reveal is real. Stub `verifyAuditLog` to always return OK and the output visibly changes while the test suite fails.
 
@@ -188,7 +188,7 @@ The tamper reveal is real. Stub `verifyAuditLog` to always return OK and the out
 
 ## Known open item
 
-`sendTransaction` throwing **after** broadcast (`packages/adapter-solana/src/index.ts`) records `failed` with `txSig: null` and consumes no budget — but the transaction may already be on its way. It is the same "money may have moved" class as the confirmation gap that was fixed, and it is the first thing on the post-MVP list.
+`sendTransaction` throwing **after** broadcast (`packages/adapter-solana/src/index.ts`) records `failed` with `txSig: null` and consumes no budget, but the transaction may already be on its way. It is the same "money may have moved" class as the confirmation gap that was fixed, and it is the first thing on the post-MVP list.
 
 ## Verifying any of this yourself
 
