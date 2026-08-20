@@ -86,6 +86,8 @@ This is also why the log's integrity matters so much: it is not just evidence, i
 
 Append-only JSONL. Every line is hash-chained to the previous one and signed with the operator's Ed25519 key.
 
+The disk-backed sink and anchor store are exported from `@agentveins/core/fs` rather than the main entry point. Nothing in the policy engine or the audit format needs a disk, so importing `node:fs` from the main entry would hand every consumer filesystem reach it may never use, and would register as a filesystem capability in any supply-chain scan of the package.
+
 ```
 prevHash ← the previous entry's hash, verbatim
 hash     ← sha256 over a fixed-order canonical form of every signed field

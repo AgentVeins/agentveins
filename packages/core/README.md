@@ -4,7 +4,7 @@
 
 Your agent calls `guard.pay()` instead of paying directly. Every attempt, allowed or refused, is checked against one policy and appended to a tamper-evident log. The guard holds no funds and moves no money itself; a wallet adapter does that.
 
-Zero runtime dependencies. `node:crypto` only.
+Zero runtime dependencies, and the main entry point never touches the filesystem: `node:crypto` only. The disk-backed sink and anchor store live behind `@agentveins/core/fs`, so a consumer running entirely in memory is never handed filesystem reach it did not ask for.
 
 ```bash
 npm install @agentveins/core
@@ -13,7 +13,8 @@ npm install @agentveins/core
 ## Quickstart
 
 ```typescript
-import { createGuard, fileAnchorStore, fileAuditSink, type Policy } from "@agentveins/core";
+import { createGuard, type Policy } from "@agentveins/core";
+import { fileAnchorStore, fileAuditSink } from "@agentveins/core/fs";
 import { solanaAdapter } from "@agentveins/adapter-solana";
 
 const policy: Policy = {

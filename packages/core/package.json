@@ -1,6 +1,6 @@
 {
   "name": "@agentveins/core",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Spend governance for AI agents: budgets, allowlists, kill switch, signed audit log.",
   "license": "MIT",
   "type": "module",
@@ -11,14 +11,28 @@
   },
   "homepage": "https://github.com/AgentVeins/agentveins#readme",
   "bugs": "https://github.com/AgentVeins/agentveins/issues",
-  "keywords": ["ai-agents", "payments", "policy", "audit-log", "x402", "spend-controls"],
-  "engines": { "node": ">=20" },
+  "keywords": [
+    "ai-agents",
+    "payments",
+    "policy",
+    "audit-log",
+    "x402",
+    "spend-controls"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": "./dist/index.js",
-    "./sinks/file": "./dist/audit/fileSink.js"
+    "./fs": "./dist/fs.js"
   },
-  "files": ["dist"],
-  "scripts": { "build": "tsc --build", "typecheck": "tsc -p tsconfig.test.json" }
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc --build",
+    "typecheck": "tsc -p tsconfig.test.json"
+  }
 }

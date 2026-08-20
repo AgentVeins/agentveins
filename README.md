@@ -41,7 +41,8 @@ npm install @agentveins/core @agentveins/adapter-solana
 ## Quickstart
 
 ```typescript
-import { createGuard, fileAnchorStore, fileAuditSink, type Policy } from "@agentveins/core";
+import { createGuard, type Policy } from "@agentveins/core";
+import { fileAnchorStore, fileAuditSink } from "@agentveins/core/fs";
 import { solanaAdapter } from "@agentveins/adapter-solana";
 
 const policy: Policy = {

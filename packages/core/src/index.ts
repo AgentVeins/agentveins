@@ -6,13 +6,12 @@ export { validatePolicy } from "./policy.js";
 export { normalizeVendor } from "./vendor.js";
 export { formatAmount, parseAmount, USDC_DECIMALS } from "./money.js";
 export { memoryAuditSink, type MemoryAuditSink } from "./audit/memorySink.js";
-export { fileAuditSink } from "./audit/fileSink.js";
 export {
   canonicalize, hashEntry, signHash, verifyAuditLog, verifyEntry,
   type VerifyOptions, type VerifyResult,
 } from "./audit/entry.js";
 export {
-  fileAnchorStore, memoryAnchorStore, sealAnchor, verifyAnchor, type AnchorInput,
+  memoryAnchorStore, sealAnchor, verifyAnchor, type AnchorInput,
 } from "./audit/anchor.js";
 export { CorruptLogError, applyEntry, emptyState, replay, spentInWindow, windowKey } from "./state.js";
 export { CHECKS, allowlistCheck, budgetCheck, killSwitchCheck } from "./checks/index.js";

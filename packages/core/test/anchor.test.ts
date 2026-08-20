@@ -3,7 +3,8 @@ import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { fileAnchorStore, memoryAnchorStore, sealAnchor, verifyAnchor } from "../src/audit/anchor.js";
+import { memoryAnchorStore, sealAnchor, verifyAnchor } from "../src/audit/anchor.js";
+import { fileAnchorStore } from "../src/audit/fileAnchorStore.js";
 import type { AnchorInput } from "../src/audit/anchor.js";
 import type { Anchor } from "../src/types.js";
 

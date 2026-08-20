@@ -11,7 +11,8 @@ npm install @agentveins/core @agentveins/adapter-solana
 ## Usage
 
 ```typescript
-import { createGuard, fileAuditSink, fileAnchorStore, type Policy } from "@agentveins/core";
+import { createGuard, type Policy } from "@agentveins/core";
+import { fileAnchorStore, fileAuditSink } from "@agentveins/core/fs";
 import { solanaAdapter } from "@agentveins/adapter-solana";
 
 const guard = await createGuard({
