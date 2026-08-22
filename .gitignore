@@ -5,7 +5,7 @@ dist/
 audit.jsonl
 operator.key.pem
 .superpowers/
-docs/superpowers/*
+docs/
 CLAUDE.md
 
 # Generated strategy artifacts — not part of the package

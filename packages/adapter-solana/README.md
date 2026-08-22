@@ -59,6 +59,6 @@ Two refusals happen **before anything is signed**:
 
 Devnet only. No mainnet configuration exists in this package, and no key controlling real value belongs anywhere near it.
 
-Full documentation, including every guarantee and every limit: **[docs/how-it-works.md](https://github.com/AgentVeins/agentveins/blob/main/docs/how-it-works.md)**
+Full documentation, including every guarantee and every limit: **[docs.agentveins.com](https://docs.agentveins.com)**
 
 MIT
