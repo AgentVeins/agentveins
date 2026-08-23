@@ -1,14 +1,16 @@
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { URL } from "node:url";
 import { describe, expect, it } from "vitest";
 
 // "types": [] does not keep node's global `console` out of this package: undici-types, pulled
 // in transitively by @solana/kit, references all of @types/node. This test enforces the rule
-// the compiler cannot. Paths are relative to the repo root, which is vitest's cwd.
-const srcDir = "packages/adapter-solana/src";
+// the compiler cannot. The directory resolves from this file rather than from the process
+// cwd, so the scan finds the same sources however vitest was invoked.
+const srcDir = new URL("../src/", import.meta.url);
 
-async function listTsFiles(dir: string): Promise<string[]> {
+async function listTsFiles(dir: string | URL): Promise<string[]> {
   return (await readdir(dir, { recursive: true })).filter(
     (name) => name.endsWith(".ts") && !name.endsWith(".d.ts"),
   );
@@ -20,7 +22,7 @@ describe("library code", () => {
     expect(files.length).toBeGreaterThan(0);
 
     for (const name of files) {
-      const source = await readFile(`${srcDir}/${name}`, "utf8");
+      const source = await readFile(new URL(name, srcDir), "utf8");
       expect(source, `${name} must not use console`).not.toMatch(/\bconsole\s*\./);
     }
   });

@@ -33,6 +33,7 @@
   ],
   "scripts": {
     "build": "tsc --build",
+    "prepublishOnly": "tsc --build --force && vitest run --root ../..",
     "typecheck": "tsc -p tsconfig.test.json"
   }
 }
