@@ -1,6 +1,6 @@
 {
   "name": "@agentveins/adapter-cloudflare",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Interface stub for a future AgentVeins Cloudflare Wallets adapter. Not implemented.",
   "private": true,
   "license": "MIT",
@@ -8,6 +8,6 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": ["dist"],
-  "dependencies": { "@agentveins/core": "^0.1.0" },
+  "dependencies": { "@agentveins/core": "^0.2.0" },
   "scripts": { "build": "tsc --build", "typecheck": "tsc -p tsconfig.test.json" }
 }
