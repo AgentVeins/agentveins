@@ -1,4 +1,4 @@
-export const VERSION = "0.0.1";
+export const VERSION = "0.1.0";
 
 export { InvalidRequestError, NotImplementedError } from "./errors.js";
 export { createGuard, type Guard, type GuardOptions } from "./guard.js";

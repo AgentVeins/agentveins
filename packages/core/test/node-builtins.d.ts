@@ -4,3 +4,6 @@
 // declares just those two modules for the test-only type-check.
 /// <reference path="../../../node_modules/@types/node/os.d.ts" />
 /// <reference path="../../../node_modules/@types/node/path.d.ts" />
+// The version-drift test resolves package.json from import.meta.url, which the
+// src build never needs and so declares nowhere else.
+/// <reference path="../../../node_modules/@types/node/web-globals/importmeta.d.ts" />
