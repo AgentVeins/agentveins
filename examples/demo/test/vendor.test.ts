@@ -1,10 +1,12 @@
 import { PriceMismatchError, settleViaFacilitator } from "@agentveins/adapter-solana";
 import { describe, expect, it, vi } from "vitest";
-import { createVendorApp } from "../src/vendor.js";
+import { createVendorApp, type VendorFacilitator } from "../src/vendor.js";
 import { driveRequest, fetchImplFor } from "./support/expressHarness.js";
 
 const PAY_TO = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM";
 const USDC = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
+/** A well-formed address standing in for the facilitator's fee payer. */
+const FEE_PAYER = "3Nb2Y5aMBpqZ1vPnJLnHYxTFkGiwGXVQxHwR9nrqYzQd";
 const VENDOR_URL = "https://vendor.demo/forecast";
 const FORECAST_PATH = "/forecast";
 
@@ -81,5 +83,64 @@ describe("vendor server", () => {
     expect(signTransfer).toHaveBeenCalledWith(
       expect.objectContaining({ payTo: PAY_TO, amountMinor: 50_000n }),
     );
+  });
+});
+
+describe("vendor server with a facilitator", () => {
+  const SETTLED_SIG = "5".repeat(88);
+
+  it("settles the payment and hands back the facilitator's signature", async () => {
+    const settle = vi.fn(async () => ({
+      success: true,
+      transaction: SETTLED_SIG,
+      network: "solana-devnet",
+    }));
+    const app = createVendorApp({
+      priceMinor: 50_000n,
+      payTo: PAY_TO,
+      feePayer: FEE_PAYER,
+      facilitator: { settle } as unknown as VendorFacilitator,
+    });
+
+    const receipt = await settleViaFacilitator({
+      vendorUrl: VENDOR_URL,
+      approvedAmountMinor: 50_000n,
+      expectedAsset: USDC,
+      signTransfer: async () => ({ wireTransaction: "AQID", lastValidBlockHeight: 100n }),
+      fetchImpl: fetchImplFor(app, FORECAST_PATH),
+    });
+
+    expect(receipt.txSig).toBe(SETTLED_SIG);
+    // The facilitator must settle against the same terms the client was quoted, not a
+    // re-derived copy that could drift from them.
+    const [, requirements] = settle.mock.calls[0] as unknown as [unknown, { payTo: string; maxAmountRequired: string }];
+    expect(requirements.payTo).toBe(PAY_TO);
+    expect(requirements.maxAmountRequired).toBe("50000");
+  });
+
+  it("answers 402 rather than serving the resource when settlement fails", async () => {
+    const app = createVendorApp({
+      priceMinor: 50_000n,
+      payTo: PAY_TO,
+      feePayer: FEE_PAYER,
+      facilitator: {
+        settle: async () => ({
+          success: false,
+          errorMessage: "insufficient funds",
+          transaction: "",
+          network: "solana-devnet",
+        }),
+      } as unknown as VendorFacilitator,
+    });
+
+    await expect(
+      settleViaFacilitator({
+        vendorUrl: VENDOR_URL,
+        approvedAmountMinor: 50_000n,
+        expectedAsset: USDC,
+        signTransfer: async () => ({ wireTransaction: "AQID", lastValidBlockHeight: 100n }),
+        fetchImpl: fetchImplFor(app, FORECAST_PATH),
+      }),
+    ).rejects.toThrow(/rejected the payment/);
   });
 });
