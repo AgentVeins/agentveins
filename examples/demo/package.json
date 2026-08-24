@@ -8,7 +8,8 @@
     "demo": "tsx src/demo.ts",
     "vendor": "tsx src/vendor.ts",
     "build": "tsc --build",
-    "typecheck": "tsc -p tsconfig.test.json"
+    "typecheck": "tsc -p tsconfig.test.json",
+    "test:devnet": "DEVNET_SETTLE=1 vitest run --root ../.. examples/demo/test/devnet-x402.test.ts"
   },
   "dependencies": {
     "@agentveins/adapter-solana": "^0.2.0",

@@ -3,15 +3,24 @@ import process from "node:process";
 import { solanaAdapter } from "@agentveins/adapter-solana";
 import { createKeyPairFromBytes, createSolanaRpc, devnet, signature } from "@solana/kit";
 import { describe, expect, it } from "vitest";
+import { loadEnvFile, resolveFromPackage } from "../src/env.js";
 import { devnetFacilitator } from "../src/facilitator.js";
 import { createVendorApp } from "../src/vendor.js";
 import { fetchImplFor } from "./support/expressHarness.js";
+
+// Before the gate below reads them: vitest does not load the demo's .env the way the demo
+// runner does, so without this the test silently skips on a fully configured machine.
+await loadEnvFile();
 
 const agentKeypairPath = process.env["SOLANA_KEYPAIR_PATH"];
 const facilitatorKeypairPath = process.env["FACILITATOR_KEYPAIR_PATH"];
 const vendorAddress = process.env["VENDOR_ADDRESS"];
 const rpcUrl = process.env["SOLANA_RPC_URL"] ?? "https://api.devnet.solana.com";
+// Opt-in by an explicit flag, not by the mere presence of a configured .env: this test spends
+// real devnet USDC every run, and `npm test` — which prepublishOnly also runs — must never move
+// money as a side effect of being configured.
 const configured =
+  process.env["DEVNET_SETTLE"] === "1" &&
   agentKeypairPath !== undefined &&
   facilitatorKeypairPath !== undefined &&
   vendorAddress !== undefined;
@@ -21,7 +30,7 @@ const VENDOR_URL = "https://vendor.devnet/forecast";
 const FORECAST_PATH = "/forecast";
 
 async function keypairBytes(path: string): Promise<Uint8Array> {
-  return Uint8Array.from(JSON.parse(await readFile(path, "utf8")) as number[]);
+  return Uint8Array.from(JSON.parse(await readFile(resolveFromPackage(path), "utf8")) as number[]);
 }
 
 /**

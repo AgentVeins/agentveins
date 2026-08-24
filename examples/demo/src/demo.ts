@@ -14,6 +14,7 @@ import {
 } from "@agentveins/core";
 import { solanaAdapter } from "@agentveins/adapter-solana";
 import { createKeyPairFromBytes } from "@solana/kit";
+import { loadEnvFile } from "./env.js";
 import { mockAdapter } from "./mockAdapter.js";
 import { createVendorApp } from "./vendor.js";
 
@@ -94,39 +95,6 @@ function record(log: Logger, counts: { settled: number; blocked: number; failed:
   };
 }
 
-// A minimal, dependency-free .env reader: KEY=VALUE lines, optional quotes, "#" comments. Only
-// fills in variables the shell has not already set, so a real environment always wins over the
-// file. Silently does nothing when the file is absent, which is every --mock run and every fresh
-// clone before an operator creates one.
-async function loadEnvFile(path = ".env"): Promise<void> {
-  let raw: string;
-  try {
-    raw = await readFile(path, "utf8");
-  } catch {
-    return;
-  }
-  for (const line of raw.split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed === "" || trimmed.startsWith("#")) {
-      continue;
-    }
-    const eq = trimmed.indexOf("=");
-    if (eq === -1) {
-      continue;
-    }
-    const key = trimmed.slice(0, eq).trim();
-    let value = trimmed.slice(eq + 1).trim();
-    const quoted =
-      value.length >= 2 &&
-      ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")));
-    if (quoted) {
-      value = value.slice(1, -1);
-    }
-    if (process.env[key] === undefined) {
-      process.env[key] = value;
-    }
-  }
-}
 
 async function loadDirectKeypair(): Promise<webcrypto.CryptoKeyPair> {
   const path = process.env["SOLANA_KEYPAIR_PATH"];

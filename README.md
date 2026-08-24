@@ -86,7 +86,7 @@ await guard.flush();  // optional: waits for queued audit writes to reach the si
 
 `signingKey` is an ed25519 private key you own (`generateKeyPairSync("ed25519")`); it signs audit entries and the anchor, and never leaves your process. Keep the `anchor` store: without it a deleted `audit.jsonl` looks like a fresh start and silently restores the full budget. If the audit log cannot be written, the guard latches: the payment in flight when the write fails still settles and is still reported `settled` with its real signature, but every payment *after* that is blocked with an `audit_unavailable` violation. A guard that cannot record does not authorize what comes next, though it cannot undo what it already did. See "Audit log" below for what that latch does and does not guarantee.
 
-Integration target: under 10 minutes from `npm install` to your first governed payment. The guard, policy engine, and signed audit log are live today, and `@agentveins/adapter-solana` carries both settlement modes. A direct USDC transfer and x402. The x402 payload is checked against the reference facilitator's own verifier in the test suite; no payment has been settled against a live facilitator on devnet yet.
+Integration target: under 10 minutes from `npm install` to your first governed payment. The guard, policy engine, and signed audit log are live today, and `@agentveins/adapter-solana` carries both settlement modes. A direct USDC transfer and x402. Both have settled real USDC on devnet: x402 mode settles through x402's own reference facilitator, run in-process against devnet rather than hosted by a third party, and `examples/demo/test/devnet-x402.test.ts` reproduces it and reads the signature back from the chain.
 
 ## See it work
 
@@ -128,7 +128,7 @@ It sits between your agent and its money. Every wallet, rail, and framework is a
 ## Roadmap
 
 - [x] Policy engine: budgets, allowlist, kill switch
-- [x] Solana devnet payment path (x402): the transaction that x402 mode builds passes x402's own facilitator `verify()` offline; it has not yet been settled against a live facilitator on devnet, so read this row as "verified", not "settled"
+- [x] Solana devnet payment path (x402): **settled**, not merely verified — [`43ctpPA1…FmNte`](https://explorer.solana.com/tx/43ctpPA1RDqyoPoaTaJXngbot7TowVbUX6SQpmH9z5UQjT92AGFNA7kxasf4HTUVgaPHGL78gVdTvPLmn24FmNte?cluster=devnet) moved 0.01 USDC on devnet with the agent signing the transfer and the facilitator paying the fee. The facilitator is x402's reference implementation run in-process (`examples/demo/src/facilitator.ts`), not a hosted third party; settlement against someone else's facilitator is untested
 - [x] Signed audit log
 - [ ] Base adapter
 - [ ] Velocity rules
