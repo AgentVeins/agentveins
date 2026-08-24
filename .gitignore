@@ -12,3 +12,6 @@ CLAUDE.md
 .superstack/
 
 .claude/
+
+# Devnet keypairs — generated locally, never committed
+examples/demo/devnet-*.json
