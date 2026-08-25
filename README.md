@@ -106,7 +106,103 @@ Drop `-- --mock` to run the same five acts as real USDC transfers on Solana devn
 shell or in `examples/demo/.env` (copy `examples/demo/.env.example` to `examples/demo/.env` and
 fill it in; loaded automatically if present, never committed). `npm run demo -- --x402` runs a
 separate, sixth act: a vendor quotes more than the guard approved, and the adapter refuses to sign
-before anything moves.
+before anything moves. That act prints the x402 handshake as it happens — the 402 quote, its
+price, its `payTo` and its fee payer — because x402 negotiates over HTTP and none of it is visible
+on-chain, where an explorer sees an ordinary token transfer and cannot label it x402.
+
+Every command in this repo, including settling on devnet, is listed under [Commands](#commands).
+
+## Commands
+
+Every command runs from the repo root. `npm install` once, at the root — the workspaces link to
+each other, so installing inside a package instead will pull published copies from the registry
+and you will be testing the wrong code.
+
+### Build and check
+
+```
+npm run build                                     # tsc --build, all packages
+npx tsc --build --force                           # clean rebuild; use after deleting any dist/
+npm test                                          # whole repo; skips everything that spends money
+npm run typecheck --workspace=@agentveins/core    # covers tests, which the build does not
+```
+
+`--force` is not superstition: `tsc --build` trusts its `.tsbuildinfo` and silently skips a
+project whose `dist/` was removed by hand, which surfaces as type errors in whatever package
+depends on it rather than in the one that is actually stale.
+
+### Demo
+
+```
+npm run demo -- --mock                            # five acts, no network, no keys
+npm run demo -- --x402                            # the x402 act, printing the HTTP handshake
+npm run demo                                      # direct mode against devnet; needs .env
+npm run vendor --workspace=@agentveins/demo       # the 402 vendor alone, on VENDOR_PORT
+```
+
+### Settling on devnet
+
+```
+npm run test:devnet --workspace=@agentveins/demo  # x402 settlement, ~0.01 USDC per run
+```
+
+Skipped unless `DEVNET_SETTLE=1`, which that script sets for the one run. The flag exists because
+the test spends real money and `prepublishOnly` runs the full suite — publishing must never move
+funds as a side effect of a configured machine.
+
+### Publishing
+
+```
+npm publish --workspace=@agentveins/core --access public
+npm publish --workspace=@agentveins/adapter-solana --access public
+npm publish --workspace=@agentveins/core --dry-run     # runs the gate, uploads nothing
+```
+
+Core first; the adapter depends on it. `prepublishOnly` forces a clean build and runs the suite,
+so a stale `dist/` cannot ship.
+
+### Inspecting what settled
+
+```
+solana confirm -v <SIGNATURE> --url devnet
+solana transaction-history <TOKEN_ACCOUNT> --url devnet --limit 5
+spl-token balance --address <TOKEN_ACCOUNT> --url devnet
+```
+
+`solana confirm -v` is what shows the x402 shape: `Account 0` is the facilitator, marked
+`(fee payer)`, and the agent is `Account 1` marked `sr--` — a signer that is not writable, so its
+SOL balance cannot be touched. An agent paying over x402 needs the asset it spends and no gas.
+
+### Devnet keys
+
+x402 needs two funded keypairs, because the agent signs a transfer it cannot broadcast and the
+facilitator pays the fee and submits it.
+
+```
+solana-keygen new --no-bip39-passphrase -s -o examples/demo/devnet-keypair.json
+solana-keygen new --no-bip39-passphrase -s -o examples/demo/devnet-facilitator.json
+spl-token create-account <USDC_MINT> --owner <VENDOR_WALLET> \
+  --fee-payer examples/demo/devnet-keypair.json --url devnet
+```
+
+SOL from [faucet.solana.com](https://faucet.solana.com) for both keys, devnet USDC from
+[faucet.circle.com](https://faucet.circle.com) for the agent only. `solana airdrop` works when the
+public endpoint is not rate-limited, which is rarely. Create the vendor's token account before
+settling: the transaction carries only `TransferChecked` and never creates one, so a missing
+destination account fails on-chain rather than politely.
+
+### Environment
+
+`examples/demo/.env`, read by the demo and the devnet test. Copy `.env.example` and fill it in.
+
+| Variable | Purpose |
+| --- | --- |
+| `SOLANA_RPC_URL` | Defaults to `https://api.devnet.solana.com` |
+| `SOLANA_KEYPAIR_PATH` | The agent — signs the transfer |
+| `FACILITATOR_KEYPAIR_PATH` | The fee payer — broadcasts it |
+| `VENDOR_ADDRESS` | A wallet address, **not** a token account; the adapter derives the token account itself |
+| `VENDOR_PORT` | The demo's local vendor; defaults to 3001 |
+| `DEVNET_SETTLE` | Set to `1` to let the settlement test run. Leave it out of `.env` |
 
 ## What AgentVeins is NOT
 

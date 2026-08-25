@@ -1,5 +1,6 @@
 import express from "express";
 import { encodePaymentResponseHeader } from "@x402/core/http";
+import { loadEnvFile } from "./env.js";
 import { PaymentPayloadV1Schema } from "@x402/core/schemas";
 import type { PaymentPayload, PaymentRequirements, SettleResponse } from "@x402/core/types";
 
@@ -154,6 +155,9 @@ async function settlePayment(
 }
 
 if (process.argv[1]?.endsWith("vendor.ts")) {
+  // Run on its own the vendor reads the same .env the demo does, so `npm run vendor` quotes the
+  // configured recipient rather than the placeholder.
+  await loadEnvFile();
   const port = Number(process.env["VENDOR_PORT"] ?? 3001);
   createVendorApp({ priceMinor: 50_000n, payTo: process.env["VENDOR_ADDRESS"] ?? DEFAULT_PAY_TO }).listen(
     port,
