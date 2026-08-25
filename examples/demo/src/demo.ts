@@ -15,6 +15,7 @@ import {
 import { solanaAdapter } from "@agentveins/adapter-solana";
 import { createKeyPairFromBytes } from "@solana/kit";
 import { loadEnvFile } from "./env.js";
+import { tracingFetch } from "./trace.js";
 import { mockAdapter } from "./mockAdapter.js";
 import { createVendorApp } from "./vendor.js";
 
@@ -273,7 +274,9 @@ async function runX402Act(options: DemoOptions, log: Logger): Promise<X402ActSum
     keypair: {} as webcrypto.CryptoKeyPair,
     rpcUrl: process.env["SOLANA_RPC_URL"] ?? "https://api.devnet.solana.com",
     mode: "x402",
-    ...(fetchImpl === undefined ? {} : { fetchImpl }),
+    // Always wrapped, so the handshake is on screen whether the vendor is a real listener or the
+    // in-process app the tests drive.
+    fetchImpl: tracingFetch(fetchImpl ?? fetch, log),
   });
 
   const guard = await createGuard({
@@ -289,6 +292,7 @@ async function runX402Act(options: DemoOptions, log: Logger): Promise<X402ActSum
   log(`  guard's per-tx limit  ${perTxBudget.limit} USDC`);
   log(`  the agent requests    ${requestedAmount} USDC`);
   log(`  the vendor quotes     ${formatAmount(quotedMinor)} USDC`);
+  log("\n  the x402 exchange, as it happens over HTTP:");
 
   const result = await guard.pay({
     to: vendorUrl,
