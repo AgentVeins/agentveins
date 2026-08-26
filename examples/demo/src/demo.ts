@@ -14,6 +14,8 @@ import {
 } from "@agentveins/core";
 import { solanaAdapter } from "@agentveins/adapter-solana";
 import { createKeyPairFromBytes } from "@solana/kit";
+import { loadEnvFile } from "./env.js";
+import { tracingFetch } from "./trace.js";
 import { mockAdapter } from "./mockAdapter.js";
 import { createVendorApp } from "./vendor.js";
 
@@ -94,39 +96,6 @@ function record(log: Logger, counts: { settled: number; blocked: number; failed:
   };
 }
 
-// A minimal, dependency-free .env reader: KEY=VALUE lines, optional quotes, "#" comments. Only
-// fills in variables the shell has not already set, so a real environment always wins over the
-// file. Silently does nothing when the file is absent, which is every --mock run and every fresh
-// clone before an operator creates one.
-async function loadEnvFile(path = ".env"): Promise<void> {
-  let raw: string;
-  try {
-    raw = await readFile(path, "utf8");
-  } catch {
-    return;
-  }
-  for (const line of raw.split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed === "" || trimmed.startsWith("#")) {
-      continue;
-    }
-    const eq = trimmed.indexOf("=");
-    if (eq === -1) {
-      continue;
-    }
-    const key = trimmed.slice(0, eq).trim();
-    let value = trimmed.slice(eq + 1).trim();
-    const quoted =
-      value.length >= 2 &&
-      ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")));
-    if (quoted) {
-      value = value.slice(1, -1);
-    }
-    if (process.env[key] === undefined) {
-      process.env[key] = value;
-    }
-  }
-}
 
 async function loadDirectKeypair(): Promise<webcrypto.CryptoKeyPair> {
   const path = process.env["SOLANA_KEYPAIR_PATH"];
@@ -305,7 +274,9 @@ async function runX402Act(options: DemoOptions, log: Logger): Promise<X402ActSum
     keypair: {} as webcrypto.CryptoKeyPair,
     rpcUrl: process.env["SOLANA_RPC_URL"] ?? "https://api.devnet.solana.com",
     mode: "x402",
-    ...(fetchImpl === undefined ? {} : { fetchImpl }),
+    // Always wrapped, so the handshake is on screen whether the vendor is a real listener or the
+    // in-process app the tests drive.
+    fetchImpl: tracingFetch(fetchImpl ?? fetch, log),
   });
 
   const guard = await createGuard({
@@ -321,6 +292,7 @@ async function runX402Act(options: DemoOptions, log: Logger): Promise<X402ActSum
   log(`  guard's per-tx limit  ${perTxBudget.limit} USDC`);
   log(`  the agent requests    ${requestedAmount} USDC`);
   log(`  the vendor quotes     ${formatAmount(quotedMinor)} USDC`);
+  log("\n  the x402 exchange, as it happens over HTTP:");
 
   const result = await guard.pay({
     to: vendorUrl,
