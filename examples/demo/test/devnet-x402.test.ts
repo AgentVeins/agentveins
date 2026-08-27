@@ -4,6 +4,7 @@ import { solanaAdapter } from "@agentveins/adapter-solana";
 import { createKeyPairFromBytes, createSolanaRpc, devnet, signature } from "@solana/kit";
 import { describe, expect, it } from "vitest";
 import { loadEnvFile, resolveFromPackage } from "../src/env.js";
+import { explorerUrl } from "../src/trace.js";
 import { devnetFacilitator } from "../src/facilitator.js";
 import { createVendorApp } from "../src/vendor.js";
 import { fetchImplFor } from "./support/expressHarness.js";
@@ -84,5 +85,9 @@ describe.skipIf(!configured)("x402 devnet settlement", () => {
 
     expect(confirmed).not.toBeNull();
     expect(confirmed?.meta?.err).toBeNull();
+
+    // Printed only once the chain has confirmed it: a link to a transaction that turned out to
+    // have failed would be worse than no link.
+    process.stdout.write(`\n  settled 0.01 USDC on devnet\n  ${explorerUrl(receipt.txSig)}\n\n`);
   }, 120_000);
 });

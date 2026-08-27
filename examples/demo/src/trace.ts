@@ -124,3 +124,14 @@ export function tracingFetch(inner: typeof fetch, log: Logger): typeof fetch {
     return response;
   };
 }
+
+/**
+ * A link to the settled transaction. The signature alone proves nothing to a reader who has to
+ * paste it somewhere first, and this project asks people to check its claims rather than take
+ * them: the whole point of settling on devnet was to produce something anyone can open.
+ *
+ * Devnet is hardcoded because no mainnet configuration exists anywhere in this repo.
+ */
+export function explorerUrl(txSig: string): string {
+  return `https://explorer.solana.com/tx/${txSig}?cluster=devnet`;
+}
