@@ -38,28 +38,10 @@ function fakeAdapter(overrides: Partial<WalletAdapter> = {}): WalletAdapter {
 
 const clock = () => new Date("2026-08-13T12:00:00.000Z");
 
-async function guardWith(adapter: WalletAdapter, sink: MemoryAuditSink = memoryAuditSink()) {
-  const guard = await createGuard({
-    policy: policy(),
-    adapters: [adapter],
-    audit: sink,
-    agent: "demo-agent",
-    logId: LOG_ID,
-    signingKey: keys.privateKey,
-    now: clock,
-  });
-  return { guard, sink };
-}
-
-/** A `fakeAdapter` whose `execute` is supplied directly, for tests that only care about timing. */
-function stubAdapter(execute: (req: SettlementRequest) => Promise<SettlementReceipt>): WalletAdapter {
-  return fakeAdapter({ execute: vi.fn(execute) });
-}
-
 /**
- * `guardWith` fixes the adapter list and hands back `{ guard, sink }`; the approval-gate suite
- * needs `policy` and `approvals` overridden together and just wants the guard back, so this
- * builds `GuardOptions` from the same defaults and lets any field be overridden per test.
+ * The one place `GuardOptions` defaults are defined. `guardWith` below delegates here rather
+ * than keeping its own copy: two copies of `agent` in particular could drift silently, and a
+ * drifted `agent` breaks approval-key matching without the compiler ever noticing.
  */
 function makeGuard(overrides: Partial<GuardOptions> = {}): Promise<Guard> {
   return createGuard({
@@ -72,6 +54,16 @@ function makeGuard(overrides: Partial<GuardOptions> = {}): Promise<Guard> {
     now: clock,
     ...overrides,
   });
+}
+
+async function guardWith(adapter: WalletAdapter, sink: MemoryAuditSink = memoryAuditSink()) {
+  const guard = await makeGuard({ adapters: [adapter], audit: sink });
+  return { guard, sink };
+}
+
+/** A `fakeAdapter` whose `execute` is supplied directly, for tests that only care about timing. */
+function stubAdapter(execute: (req: SettlementRequest) => Promise<SettlementReceipt>): WalletAdapter {
+  return fakeAdapter({ execute: vi.fn(execute) });
 }
 
 /** A sink whose append fails whenever the predicate says so; failures leave no entry behind. */

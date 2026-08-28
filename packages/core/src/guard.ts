@@ -402,14 +402,18 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
           return { status: "blocked", violation: unavailable, auditId: outcome.id };
         }
 
-        if (decision === "grant" && approvalId !== null) {
-          try {
-            // Before the rail, never after: a crash between broadcast and consume would leave the
-            // approval unspent and let the agent replay a payment a person sanctioned once. The
-            // cost is that a rail failure burns it and the person is asked again.
-            await approvalStore.consume(approvalId);
-          } catch {
-            decision = "used";
+        if (decision === "grant") {
+          if (approvalId === null) {
+            decision = "missing";
+          } else {
+            try {
+              // Before the rail, never after: a crash between broadcast and consume would leave the
+              // approval unspent and let the agent replay a payment a person sanctioned once. The
+              // cost is that a rail failure burns it and the person is asked again.
+              await approvalStore.consume(approvalId);
+            } catch {
+              decision = "used";
+            }
           }
         }
 
