@@ -6,7 +6,7 @@ import { verifyAuditLog } from "../src/audit/entry.js";
 import { memoryAuditSink, type MemoryAuditSink } from "../src/audit/memorySink.js";
 import { createGuard, type Guard, type GuardOptions } from "../src/guard.js";
 import type {
-  Anchor, AnchorStore, Approval, AuditEntry, PayResult, Policy, SettlementReceipt,
+  Anchor, AnchorStore, Approval, ApprovalStore, AuditEntry, PayResult, Policy, SettlementReceipt,
   SettlementRequest, WalletAdapter,
 } from "../src/types.js";
 
@@ -1065,6 +1065,19 @@ describe("approval gate", () => {
     expect(result.status).toBe("settled");
   });
 
+  it("settles one minor unit below the threshold and blocks one above", async () => {
+    const guard = await makeGuard({ policy: approvalPolicy, approvals: memoryApprovalStore([]) });
+    const req = { to: "https://api.weather.com/f", currency: "USDC" as const, reason: "r" };
+
+    const below = await guard.pay({ ...req, amount: "0.049999" });
+    const above = await guard.pay({ ...req, amount: "0.050001" });
+
+    expect(below.status).toBe("settled");
+    expect(above.status).toBe("blocked");
+    if (above.status !== "blocked") throw new Error("expected blocked");
+    expect(above.violation.code).toBe("approval_required");
+  });
+
   it("settles once an approval exists and spends it", async () => {
     const store = memoryApprovalStore([pendingApproval()]);
     const guard = await makeGuard({ policy: approvalPolicy, approvals: store });
@@ -1144,6 +1157,64 @@ describe("approval gate", () => {
     const guard = await makeGuard({ policy: approvalPolicy, approvals: broken });
 
     expect((await guard.pay({ to: "https://api.weather.com/f", amount: "0.01", currency: "USDC", reason: "r" })).status).toBe("settled");
+  });
+
+  it("blocks with approval_unavailable when the approval cannot be claimed", async () => {
+    const store = memoryApprovalStore([pendingApproval()]);
+    const adapter = fakeAdapter();
+    const wrapped: ApprovalStore = {
+      find: store.find.bind(store),
+      consume: async () => {
+        throw new Error("store down");
+      },
+    };
+    const guard = await makeGuard({ policy: approvalPolicy, approvals: wrapped, adapters: [adapter] });
+
+    const result = await guard.pay({ to: "https://api.weather.com/f", amount: "0.10", currency: "USDC", reason: "r" });
+
+    // Not `approval_required`: the guard cannot tell a lost race from a broken store, and that
+    // violation is signed into the audit log as a claim about a human's approval.
+    expect(result.status).toBe("blocked");
+    if (result.status !== "blocked") throw new Error("expected blocked");
+    expect(result.violation.code).toBe("approval_unavailable");
+    expect(adapter.execute).toHaveBeenCalledTimes(0);
+  });
+
+  it("keeps paying below the threshold after a claim failed, so nothing latches", async () => {
+    const store = memoryApprovalStore([pendingApproval()]);
+    const wrapped: ApprovalStore = {
+      find: store.find.bind(store),
+      consume: async () => {
+        throw new Error("store down");
+      },
+    };
+    const guard = await makeGuard({ policy: approvalPolicy, approvals: wrapped });
+
+    await guard.pay({ to: "https://api.weather.com/f", amount: "0.10", currency: "USDC", reason: "r" });
+
+    expect((await guard.pay({ to: "https://api.weather.com/f", amount: "0.01", currency: "USDC", reason: "r" })).status).toBe("settled");
+  });
+
+  it("blocks a payment frozen while the approval gate was still running", async () => {
+    const store = memoryApprovalStore([pendingApproval()]);
+    const adapter = fakeAdapter();
+    let guard: Guard;
+    const wrapped: ApprovalStore = {
+      find: async (key) => {
+        const found = await store.find(key);
+        await guard.freeze();
+        return found;
+      },
+      consume: store.consume.bind(store),
+    };
+    guard = await makeGuard({ policy: approvalPolicy, approvals: wrapped, adapters: [adapter] });
+
+    const result = await guard.pay({ to: "https://api.weather.com/f", amount: "0.10", currency: "USDC", reason: "r" });
+
+    expect(result.status).toBe("blocked");
+    if (result.status !== "blocked") throw new Error("expected blocked");
+    expect(result.violation.code).toBe("kill_switch");
+    expect(adapter.execute).toHaveBeenCalledTimes(0);
   });
 
   it("refuses to construct a guard whose threshold has no store behind it", async () => {
