@@ -85,7 +85,26 @@ await guard.freeze(); // emergency stop, instantly: see below
 await guard.flush();  // optional: waits for queued audit writes to reach the sink
 ```
 
-A payment above `approvals.above` with no matching approval on file returns `blocked` with `approval_required` and never reaches the rail. It is a denial, not a suspended call: `pay()` does not wait, because payments are serialized and one pending approval would otherwise stall every other payment the agent makes. Approve those exact terms in the store and the agent's retry settles. An approval is bound to one agent, one vendor and one exact amount, is spent on use, and is consumed *before* the rail is called — so a rail failure burns it and the human is asked again, which is the same direction the guard already rounds for an unconfirmed settlement. One limit stated plainly: `fileApprovalStore` serializes consumes within a process, not across them, so two processes sharing one approval file can both spend one approval. Run one process per policy, or back the store with a database that locks.
+A payment above `approvals.above` with no matching approval on file returns `blocked` with `approval_required` and never reaches the rail. It is a denial, not a suspended call: `pay()` does not wait, because payments are serialized and one pending approval would otherwise stall every other payment the agent makes. Approve those exact terms in the store and the agent's retry settles. An approval is bound to one agent, one vendor and one exact amount, is spent on use, and is consumed *before* the rail is called — so a rail failure burns it and the human is asked again, which is the same direction the guard already rounds for an unconfirmed settlement.
+
+If the store cannot be read, or the approval cannot be claimed — a peer process may have taken it, or the store may be down — the payment blocks with `approval_unavailable` rather than `approval_required`. The guard cannot tell those two apart, so it asserts neither into a log whose entries are signed and permanent. Neither case latches the guard: payments below the threshold keep settling. A `freeze()` that lands while the gate is waiting on the store also stops the payment, with `kill_switch`, because the switch is re-read before the rail is called; an approval already spent by then stays spent and the human is asked again. One limit stated plainly: `fileApprovalStore` serializes consumes within a process, not across them, so two processes sharing one approval file can both spend one approval. Run one process per policy, or back the store with a database that locks.
+
+**Writing approvals is your job.** `fileApprovalStore` reads approvals and spends them; it has no write API, because deciding to release money is the human half of this feature and an agent's own process should not hold a pen for it. The file is a JSON array:
+
+```json
+[
+  {
+    "id": "apr_1",
+    "agent": "research-agent",
+    "vendorNormalized": "api.weather.com",
+    "amountMinor": "7500000",
+    "expiresAt": "2026-09-01T00:00:00.000Z",
+    "usedAt": null
+  }
+]
+```
+
+`amountMinor` is a **decimal string of USDC minor units** (`"7500000"` is 7.50), never a JSON number — a number cannot carry a u64 exactly. `agent` must match the guard's `agent`, and `vendorNormalized` must match what `normalizeVendor()` returns for the vendor URL. `expiresAt` is ISO 8601. `usedAt` must be present and explicitly `null` while unspent; the store stamps it with an ISO timestamp when the guard spends it. A record missing a field or carrying the wrong type throws a `SyntaxError` naming the file and the record — a malformed approval is never read as a quiet denial.
 
 `freeze()` means it: it closes the kill switch in memory before it returns, so every later `pay` is already blocked even while a payment is still waiting on a slow rail. Only its audit entry is queued behind that payment, which is what `flush()` waits for. Call it before exiting a process that just froze. Payments themselves stay strictly serialized, so two concurrent calls can never race the same budget. `unfreeze()` is queued in full: the switch may snap shut out of turn, never open out of turn.
 
