@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { memoryApprovalStore } from "../src/approvals/memoryStore.js";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileApprovalStore } from "../src/approvals/fileStore.js";
 import type { Approval, ApprovalKey, ApprovalStore } from "../src/types.js";
 
 const key: ApprovalKey = {
@@ -54,3 +58,31 @@ function contract(name: string, make: (seed: Approval[]) => Promise<ApprovalStor
 }
 
 contract("memoryApprovalStore", async (seed) => memoryApprovalStore(seed));
+
+contract("fileApprovalStore", async (seed) => {
+  const dir = await mkdtemp(join(tmpdir(), "av-approvals-"));
+  const path = join(dir, "approvals.json");
+  await writeFile(
+    path,
+    JSON.stringify(seed.map((a) => ({ ...a, amountMinor: a.amountMinor.toString() }))),
+    "utf8",
+  );
+  return fileApprovalStore(path);
+});
+
+describe("fileApprovalStore persistence", () => {
+  it("survives a reopen, so a restart does not resurrect a spent approval", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "av-approvals-"));
+    const path = join(dir, "approvals.json");
+    await writeFile(path, JSON.stringify([{ ...approval(), amountMinor: "25000000" }]), "utf8");
+
+    await fileApprovalStore(path).consume("apr_1");
+
+    expect((await fileApprovalStore(path).find(key))?.usedAt).not.toBeNull();
+  });
+
+  it("treats a missing file as an empty store", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "av-approvals-"));
+    expect(await fileApprovalStore(join(dir, "absent.json")).find(key)).toBeNull();
+  });
+});
