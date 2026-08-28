@@ -5,7 +5,6 @@ export { normalizeVendor } from "./vendor.js";
 export { formatAmount, parseAmount, USDC_DECIMALS } from "./money.js";
 export { memoryAuditSink, type MemoryAuditSink } from "./audit/memorySink.js";
 export { memoryApprovalStore, type MemoryApprovalStore } from "./approvals/memoryStore.js";
-export { decideApproval, type ApprovalDecision } from "./approvals/decide.js";
 export {
   canonicalize, hashEntry, signHash, verifyAuditLog, verifyEntry,
   type VerifyOptions, type VerifyResult,
