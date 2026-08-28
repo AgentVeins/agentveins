@@ -5,7 +5,9 @@ export interface MemoryApprovalStore extends ApprovalStore {
 }
 
 export function memoryApprovalStore(seed: Approval[] = []): MemoryApprovalStore {
-  const approvals = [...seed];
+  // Each record is copied: consuming marks `usedAt`, and a store must not write through into
+  // the caller's own objects.
+  const approvals = seed.map((record) => ({ ...record }));
   return {
     approvals,
     async find(key: ApprovalKey): Promise<Approval | null> {

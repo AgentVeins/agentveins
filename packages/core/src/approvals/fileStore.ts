@@ -6,6 +6,36 @@ interface StoredApproval extends Omit<Approval, "amountMinor"> {
   amountMinor: string;
 }
 
+function requireString(value: unknown, at: string, field: string): string {
+  if (typeof value !== "string") {
+    throw new SyntaxError(`${at}: ${field} must be a string`);
+  }
+  return value;
+}
+
+// A hand-written file is the only way an approval exists, so a malformed record fails loudly.
+// Silently skipping one would deny a payment a person did approve, with nothing to explain why —
+// and an omitted `usedAt` in particular would read as spent rather than as unspent.
+function toApproval(record: unknown, path: string, index: number): Approval {
+  const at = `approval file ${path}, record ${index}`;
+  const fields = (typeof record === "object" && record !== null ? record : {}) as Partial<StoredApproval>;
+  const id = requireString(fields.id, at, "id");
+  const agent = requireString(fields.agent, at, "agent");
+  const vendorNormalized = requireString(fields.vendorNormalized, at, "vendorNormalized");
+  const expiresAt = requireString(fields.expiresAt, at, "expiresAt");
+  const rawAmount = requireString(fields.amountMinor, at, "amountMinor (a decimal minor-unit string)");
+  if (fields.usedAt !== null && typeof fields.usedAt !== "string") {
+    throw new SyntaxError(`${at}: usedAt must be null while unspent, or an ISO 8601 string once spent`);
+  }
+  let amountMinor: bigint;
+  try {
+    amountMinor = BigInt(rawAmount);
+  } catch {
+    throw new SyntaxError(`${at}: amountMinor is not a whole number of minor units`);
+  }
+  return { id, agent, vendorNormalized, expiresAt, usedAt: fields.usedAt, amountMinor };
+}
+
 export function fileApprovalStore(path: string): ApprovalStore {
   async function readAll(): Promise<Approval[]> {
     let raw: string;
@@ -29,10 +59,7 @@ export function fileApprovalStore(path: string): ApprovalStore {
     if (!Array.isArray(parsed)) {
       throw new SyntaxError(`approval file ${path} is corrupt`);
     }
-    return (parsed as StoredApproval[]).map((stored) => ({
-      ...stored,
-      amountMinor: BigInt(stored.amountMinor),
-    }));
+    return parsed.map((record, index) => toApproval(record, path, index));
   }
 
   // Temp file plus rename, as fileAnchorStore does: a crash mid-write must not leave a

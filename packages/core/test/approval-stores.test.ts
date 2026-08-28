@@ -86,3 +86,75 @@ describe("fileApprovalStore persistence", () => {
     expect(await fileApprovalStore(join(dir, "absent.json")).find(key)).toBeNull();
   });
 });
+
+describe("fileApprovalStore concurrency", () => {
+  it("lets only one of two overlapping consumes spend an approval", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "av-approvals-"));
+    const path = join(dir, "approvals.json");
+    await writeFile(path, JSON.stringify([{ ...approval(), amountMinor: "25000000" }]), "utf8");
+    const store = fileApprovalStore(path);
+
+    // Both calls are in flight before either resolves: without the queue both read the same
+    // unspent record and both write it back spent, so one approval pays twice.
+    const results = await Promise.allSettled([store.consume("apr_1"), store.consume("apr_1")]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+  });
+});
+
+describe("fileApprovalStore validation", () => {
+  async function storeWith(records: unknown[]): Promise<ApprovalStore> {
+    const dir = await mkdtemp(join(tmpdir(), "av-approvals-"));
+    const path = join(dir, "approvals.json");
+    await writeFile(path, JSON.stringify(records), "utf8");
+    return fileApprovalStore(path);
+  }
+
+  function record(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return { ...approval(), amountMinor: "25000000", ...overrides };
+  }
+
+  it("refuses an omitted usedAt rather than reading it as spent", async () => {
+    const { usedAt: _omitted, ...withoutUsedAt } = record();
+    const store = await storeWith([withoutUsedAt]);
+
+    await expect(store.find(key)).rejects.toThrow(/usedAt must be null/);
+  });
+
+  it("refuses a numeric amountMinor", async () => {
+    const store = await storeWith([record({ amountMinor: 25_000_000 })]);
+
+    await expect(store.find(key)).rejects.toThrow(/amountMinor/);
+  });
+
+  it("refuses an amountMinor that is not a whole number of minor units", async () => {
+    const store = await storeWith([record({ amountMinor: "25.00" })]);
+
+    await expect(store.find(key)).rejects.toThrow(/whole number of minor units/);
+  });
+
+  it("refuses a record missing a string field, naming the file and the record", async () => {
+    const store = await storeWith([record(), record({ expiresAt: null })]);
+
+    await expect(store.find(key)).rejects.toThrow(/approval file .*approvals\.json, record 1: expiresAt/);
+  });
+
+  it("names the SyntaxError so a malformed file is never read as a denial", async () => {
+    const store = await storeWith([record({ id: 7 })]);
+
+    await expect(store.find(key)).rejects.toBeInstanceOf(SyntaxError);
+  });
+});
+
+describe("memoryApprovalStore isolation", () => {
+  it("leaves the caller's seed objects untouched when it consumes", async () => {
+    const seed = [approval()];
+    const store = memoryApprovalStore(seed);
+
+    await store.consume("apr_1");
+
+    expect(seed[0]?.usedAt).toBeNull();
+    expect(store.approvals[0]?.usedAt).not.toBeNull();
+  });
+});
