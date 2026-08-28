@@ -107,7 +107,7 @@ describe("approval policy", () => {
     expect(() => validatePolicy({ ...valid(), approvals: { above: "five" } })).toThrow();
   });
 
-  it("rejects a negative threshold", () => {
-    expect(() => validatePolicy({ ...valid(), approvals: { above: "-1.00" } })).toThrow(RangeError);
+  it("rejects a negative threshold, which parseAmount refuses as a non-decimal", () => {
+    expect(() => validatePolicy({ ...valid(), approvals: { above: "-1.00" } })).toThrow(/non-negative decimal/);
   });
 });
