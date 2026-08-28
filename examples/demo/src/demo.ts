@@ -5,6 +5,7 @@ import type { Server } from "node:http";
 import {
   createGuard,
   formatAmount,
+  memoryApprovalStore,
   memoryAuditSink,
   verifyAuditLog,
   type AuditEntry,
@@ -22,6 +23,7 @@ import { createVendorApp } from "./vendor.js";
 export interface DemoOptions {
   mock?: boolean;
   x402?: boolean;
+  approvals?: boolean;
   quiet?: boolean;
   /** Test-only seam: routes the x402 act's vendor call through this instead of a real listener. */
   fetchImpl?: typeof fetch;
@@ -43,7 +45,12 @@ export interface X402ActSummary {
   result: PayResult;
 }
 
-export type DemoSummary = FiveActSummary | X402ActSummary;
+export interface ApprovalActSummary {
+  kind: "approval-act";
+  result: PayResult;
+}
+
+export type DemoSummary = FiveActSummary | X402ActSummary | ApprovalActSummary;
 
 type Logger = (line: string) => void;
 
@@ -315,11 +322,63 @@ async function runX402Act(options: DemoOptions, log: Logger): Promise<X402ActSum
   return { kind: "x402-act", result };
 }
 
+// A seventh, standalone act: the agent asks for more than the approval threshold allows. The
+// guard blocks it with nothing signed, an operator approves those exact terms, and the identical
+// request settles. The approval is spent on use, so replaying the same request blocks again.
+async function runApprovalAct(options: DemoOptions, log: Logger): Promise<ApprovalActSummary> {
+  const store = memoryApprovalStore([]);
+  const policy: Policy = { ...buildPolicy("api.weather.com"), approvals: { above: "0.05" } };
+  const keys = generateKeyPairSync("ed25519");
+  const audit = memoryAuditSink();
+  const guard = await createGuard({
+    policy,
+    adapters: [mockAdapter()],
+    audit,
+    agent: "weather-agent",
+    logId: "weather-agent-approval-demo",
+    signingKey: keys.privateKey,
+    approvals: store,
+  });
+
+  const request = { to: "https://api.weather.com/forecast", amount: "0.10", currency: "USDC" as const, reason: "bulk forecast" };
+
+  log("\n── The approval act: the agent asks permission ────");
+  log(`  approval threshold    ${policy.approvals?.above} USDC`);
+  log(`  the agent requests    ${request.amount} USDC`);
+
+  const first = await guard.pay(request);
+  if (first.status === "blocked") {
+    log(`  ✗ payment BLOCKED  ${first.violation.code} — awaiting a human`);
+    log("      no chain call was made — the attempt is in the audit log, signed");
+  }
+
+  log("\n  operator approves 0.10 USDC to api.weather.com, once");
+  store.approvals.push({
+    agent: "weather-agent",
+    vendorNormalized: "api.weather.com",
+    amountMinor: 100_000n,
+    id: "apr_demo",
+    expiresAt: new Date(Date.now() + 300_000).toISOString(),
+    usedAt: null,
+  });
+
+  const second = await guard.pay(request);
+  if (second.status === "settled") {
+    log(`  ✓ payment settled  tx=${second.txSig}`);
+  }
+  log("  the approval is spent: an identical payment would be blocked again");
+
+  return { kind: "approval-act", result: second };
+}
+
 export async function runDemo(options: DemoOptions): Promise<DemoSummary> {
   const log: Logger =
     options.logImpl ?? (options.quiet === true ? () => {} : (line) => process.stdout.write(`${line}\n`));
   if (options.x402 === true) {
     return runX402Act(options, log);
+  }
+  if (options.approvals === true) {
+    return runApprovalAct(options, log);
   }
   return runFiveActs(options, log);
 }
@@ -329,9 +388,14 @@ if (process.argv[1]?.endsWith("demo.ts")) {
   const summary = await runDemo({
     mock: process.argv.includes("--mock"),
     x402: process.argv.includes("--x402"),
+    approvals: process.argv.includes("--approvals"),
   });
   if (summary.kind === "x402-act") {
     if (summary.result.status !== "failed" || summary.result.error.code !== "price_mismatch") {
+      process.exitCode = 1;
+    }
+  } else if (summary.kind === "approval-act") {
+    if (summary.result.status !== "settled") {
       process.exitCode = 1;
     }
   } else if (!summary.verified || !summary.tamperDetected || summary.failed > 0) {

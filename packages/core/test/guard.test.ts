@@ -1,12 +1,13 @@
 import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
+import { memoryApprovalStore } from "../src/approvals/memoryStore.js";
 import { memoryAnchorStore, sealAnchor, verifyAnchor } from "../src/audit/anchor.js";
 import { verifyAuditLog } from "../src/audit/entry.js";
 import { memoryAuditSink, type MemoryAuditSink } from "../src/audit/memorySink.js";
 import { createGuard, type Guard, type GuardOptions } from "../src/guard.js";
 import type {
-  Anchor, AnchorStore, AuditEntry, PayResult, Policy, SettlementReceipt, SettlementRequest,
-  WalletAdapter,
+  Anchor, AnchorStore, Approval, ApprovalStore, AuditEntry, PayResult, Policy, SettlementReceipt,
+  SettlementRequest, WalletAdapter,
 } from "../src/types.js";
 
 const keys = generateKeyPairSync("ed25519");
@@ -37,17 +38,32 @@ function fakeAdapter(overrides: Partial<WalletAdapter> = {}): WalletAdapter {
 
 const clock = () => new Date("2026-08-13T12:00:00.000Z");
 
-async function guardWith(adapter: WalletAdapter, sink: MemoryAuditSink = memoryAuditSink()) {
-  const guard = await createGuard({
+/**
+ * The one place `GuardOptions` defaults are defined. `guardWith` below delegates here rather
+ * than keeping its own copy: two copies of `agent` in particular could drift silently, and a
+ * drifted `agent` breaks approval-key matching without the compiler ever noticing.
+ */
+function makeGuard(overrides: Partial<GuardOptions> = {}): Promise<Guard> {
+  return createGuard({
     policy: policy(),
-    adapters: [adapter],
-    audit: sink,
+    adapters: [fakeAdapter()],
+    audit: memoryAuditSink(),
     agent: "demo-agent",
     logId: LOG_ID,
     signingKey: keys.privateKey,
     now: clock,
+    ...overrides,
   });
+}
+
+async function guardWith(adapter: WalletAdapter, sink: MemoryAuditSink = memoryAuditSink()) {
+  const guard = await makeGuard({ adapters: [adapter], audit: sink });
   return { guard, sink };
+}
+
+/** A `fakeAdapter` whose `execute` is supplied directly, for tests that only care about timing. */
+function stubAdapter(execute: (req: SettlementRequest) => Promise<SettlementReceipt>): WalletAdapter {
+  return fakeAdapter({ execute: vi.fn(execute) });
 }
 
 /** A sink whose append fails whenever the predicate says so; failures leave no entry behind. */
@@ -1015,5 +1031,200 @@ describe("guard.freeze closes before it is written", () => {
     const results = await Promise.all(Array.from({ length: 40 }, () => guard.pay(request)));
     expect(results.filter((result) => result.status === "settled")).toHaveLength(10);
     expect(results.filter((result) => result.status === "blocked")).toHaveLength(30);
+  });
+});
+
+describe("approval gate", () => {
+  const approvalPolicy = { ...policy(), approvals: { above: "0.05" } };
+
+  function pendingApproval(): Approval {
+    return {
+      agent: "demo-agent",
+      vendorNormalized: "api.weather.com",
+      amountMinor: 100_000n,
+      id: "apr_1",
+      expiresAt: "2999-01-01T00:00:00.000Z",
+      usedAt: null,
+    };
+  }
+
+  it("blocks a payment above the threshold when no approval exists", async () => {
+    const guard = await makeGuard({ policy: approvalPolicy, approvals: memoryApprovalStore([]) });
+    const result = await guard.pay({ to: "https://api.weather.com/f", amount: "0.10", currency: "USDC", reason: "r" });
+
+    expect(result.status).toBe("blocked");
+    if (result.status !== "blocked") throw new Error("expected blocked");
+    expect(result.violation.code).toBe("approval_required");
+    expect(result.auditId).not.toBe("");
+  });
+
+  it("lets a payment at exactly the threshold through untouched", async () => {
+    const guard = await makeGuard({ policy: approvalPolicy, approvals: memoryApprovalStore([]) });
+    const result = await guard.pay({ to: "https://api.weather.com/f", amount: "0.05", currency: "USDC", reason: "r" });
+
+    expect(result.status).toBe("settled");
+  });
+
+  it("settles one minor unit below the threshold and blocks one above", async () => {
+    const guard = await makeGuard({ policy: approvalPolicy, approvals: memoryApprovalStore([]) });
+    const req = { to: "https://api.weather.com/f", currency: "USDC" as const, reason: "r" };
+
+    const below = await guard.pay({ ...req, amount: "0.049999" });
+    const above = await guard.pay({ ...req, amount: "0.050001" });
+
+    expect(below.status).toBe("settled");
+    expect(above.status).toBe("blocked");
+    if (above.status !== "blocked") throw new Error("expected blocked");
+    expect(above.violation.code).toBe("approval_required");
+  });
+
+  it("settles once an approval exists and spends it", async () => {
+    const store = memoryApprovalStore([pendingApproval()]);
+    const guard = await makeGuard({ policy: approvalPolicy, approvals: store });
+    const result = await guard.pay({ to: "https://api.weather.com/f", amount: "0.10", currency: "USDC", reason: "r" });
+
+    expect(result.status).toBe("settled");
+    expect(store.approvals[0]?.usedAt).not.toBeNull();
+  });
+
+  it("blocks a second payment on a spent approval", async () => {
+    const store = memoryApprovalStore([pendingApproval()]);
+    const guard = await makeGuard({ policy: approvalPolicy, approvals: store });
+    const req = { to: "https://api.weather.com/f", amount: "0.10", currency: "USDC" as const, reason: "r" };
+
+    expect((await guard.pay(req)).status).toBe("settled");
+    const second = await guard.pay(req);
+
+    expect(second.status).toBe("blocked");
+    if (second.status !== "blocked") throw new Error("expected blocked");
+    expect(second.violation.code).toBe("approval_required");
+  });
+
+  it("consumes the approval before the rail is called", async () => {
+    const order: string[] = [];
+    const store = memoryApprovalStore([pendingApproval()]);
+    const wrapped = {
+      find: store.find.bind(store),
+      consume: async (id: string) => {
+        order.push("consume");
+        await store.consume(id);
+      },
+    };
+    const adapter = stubAdapter(async () => {
+      order.push("execute");
+      return { txSig: "sig", rail: "solana" };
+    });
+    const guard = await makeGuard({ policy: approvalPolicy, approvals: wrapped, adapters: [adapter] });
+
+    await guard.pay({ to: "https://api.weather.com/f", amount: "0.10", currency: "USDC", reason: "r" });
+
+    expect(order).toEqual(["consume", "execute"]);
+  });
+
+  it("keeps the approval spent when the rail then fails", async () => {
+    const store = memoryApprovalStore([pendingApproval()]);
+    const adapter = stubAdapter(async () => {
+      throw new Error("rail down");
+    });
+    const guard = await makeGuard({ policy: approvalPolicy, approvals: store, adapters: [adapter] });
+
+    expect((await guard.pay({ to: "https://api.weather.com/f", amount: "0.10", currency: "USDC", reason: "r" })).status).toBe("failed");
+    expect(store.approvals[0]?.usedAt).not.toBeNull();
+  });
+
+  it("blocks with approval_unavailable when the store cannot be read", async () => {
+    const broken = {
+      find: async () => {
+        throw new Error("store down");
+      },
+      consume: async () => undefined,
+    };
+    const guard = await makeGuard({ policy: approvalPolicy, approvals: broken });
+    const result = await guard.pay({ to: "https://api.weather.com/f", amount: "0.10", currency: "USDC", reason: "r" });
+
+    expect(result.status).toBe("blocked");
+    if (result.status !== "blocked") throw new Error("expected blocked");
+    expect(result.violation.code).toBe("approval_unavailable");
+  });
+
+  it("keeps paying below the threshold while the store is down", async () => {
+    const broken = {
+      find: async () => {
+        throw new Error("store down");
+      },
+      consume: async () => undefined,
+    };
+    const guard = await makeGuard({ policy: approvalPolicy, approvals: broken });
+
+    expect((await guard.pay({ to: "https://api.weather.com/f", amount: "0.01", currency: "USDC", reason: "r" })).status).toBe("settled");
+  });
+
+  it("blocks with approval_unavailable when the approval cannot be claimed", async () => {
+    const store = memoryApprovalStore([pendingApproval()]);
+    const adapter = fakeAdapter();
+    const wrapped: ApprovalStore = {
+      find: store.find.bind(store),
+      consume: async () => {
+        throw new Error("store down");
+      },
+    };
+    const guard = await makeGuard({ policy: approvalPolicy, approvals: wrapped, adapters: [adapter] });
+
+    const result = await guard.pay({ to: "https://api.weather.com/f", amount: "0.10", currency: "USDC", reason: "r" });
+
+    // Not `approval_required`: the guard cannot tell a lost race from a broken store, and that
+    // violation is signed into the audit log as a claim about a human's approval.
+    expect(result.status).toBe("blocked");
+    if (result.status !== "blocked") throw new Error("expected blocked");
+    expect(result.violation.code).toBe("approval_unavailable");
+    expect(adapter.execute).toHaveBeenCalledTimes(0);
+  });
+
+  it("keeps paying below the threshold after a claim failed, so nothing latches", async () => {
+    const store = memoryApprovalStore([pendingApproval()]);
+    const wrapped: ApprovalStore = {
+      find: store.find.bind(store),
+      consume: async () => {
+        throw new Error("store down");
+      },
+    };
+    const guard = await makeGuard({ policy: approvalPolicy, approvals: wrapped });
+
+    await guard.pay({ to: "https://api.weather.com/f", amount: "0.10", currency: "USDC", reason: "r" });
+
+    expect((await guard.pay({ to: "https://api.weather.com/f", amount: "0.01", currency: "USDC", reason: "r" })).status).toBe("settled");
+  });
+
+  it("blocks a payment frozen while the approval gate was still running", async () => {
+    const store = memoryApprovalStore([pendingApproval()]);
+    const adapter = fakeAdapter();
+    let guard: Guard;
+    const wrapped: ApprovalStore = {
+      find: async (key) => {
+        const found = await store.find(key);
+        await guard.freeze();
+        return found;
+      },
+      consume: store.consume.bind(store),
+    };
+    guard = await makeGuard({ policy: approvalPolicy, approvals: wrapped, adapters: [adapter] });
+
+    const result = await guard.pay({ to: "https://api.weather.com/f", amount: "0.10", currency: "USDC", reason: "r" });
+
+    expect(result.status).toBe("blocked");
+    if (result.status !== "blocked") throw new Error("expected blocked");
+    expect(result.violation.code).toBe("kill_switch");
+    expect(adapter.execute).toHaveBeenCalledTimes(0);
+  });
+
+  it("refuses to construct a guard whose threshold has no store behind it", async () => {
+    await expect(makeGuard({ policy: approvalPolicy })).rejects.toThrow(/approval/i);
+  });
+
+  it("ignores a store when the policy sets no threshold", async () => {
+    const store = memoryApprovalStore([]);
+    const guard = await makeGuard({ policy: policy(), approvals: store });
+
+    expect((await guard.pay({ to: "https://api.weather.com/f", amount: "0.10", currency: "USDC", reason: "r" })).status).toBe("settled");
   });
 });

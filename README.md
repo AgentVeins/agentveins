@@ -24,6 +24,7 @@ Every payment your agent attempts passes through the guard **before money moves*
 | **Budget** | Is it within per-payment / daily / periodic limits? |
 | **Recipients** | Is the money going to an address you approved, not one the vendor named? |
 | **Kill switch** | Is this agent still authorized at all? |
+| **Approval** | Is this above the amount a human must sign off on? |
 | **Velocity** *(roadmap)* | Is this normal behavior, or a runaway loop? |
 
 Payments that pass proceed untouched. The agent never notices. Payments that fail return a structured violation the agent can handle gracefully. Every attempt, allowed or blocked, lands in a tamper-evident audit log: what was paid, to whom, when, and the stated reason.
@@ -42,7 +43,7 @@ npm install @agentveins/core @agentveins/adapter-solana
 
 ```typescript
 import { createGuard, type Policy } from "@agentveins/core";
-import { fileAnchorStore, fileAuditSink } from "@agentveins/core/fs";
+import { fileAnchorStore, fileApprovalStore, fileAuditSink } from "@agentveins/core/fs";
 import { solanaAdapter } from "@agentveins/adapter-solana";
 
 const policy: Policy = {
@@ -53,6 +54,7 @@ const policy: Policy = {
   vendors: { mode: "allowlist", entries: ["api.weather.com"] },
   recipients: { mode: "allowlist", entries: ["9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"] },
   killSwitch: { frozen: false },
+  approvals: { above: "5.00" },      // above this, a human must approve
 };
 
 const guard = await createGuard({
@@ -62,6 +64,7 @@ const guard = await createGuard({
   adapters: [solanaAdapter({ keypair, rpcUrl, mode: "x402" })],
   audit: fileAuditSink("./audit.jsonl"),
   anchor: fileAnchorStore("./audit.anchor.json"), // detects a truncated or deleted log
+  approvals: fileApprovalStore("./approvals.json"), // required when policy.approvals is set
   signingKey,
 });
 
@@ -81,6 +84,27 @@ const result = await guard.pay({
 await guard.freeze(); // emergency stop, instantly: see below
 await guard.flush();  // optional: waits for queued audit writes to reach the sink
 ```
+
+A payment above `approvals.above` with no matching approval on file returns `blocked` with `approval_required` and never reaches the rail. It is a denial, not a suspended call: `pay()` does not wait, because payments are serialized and one pending approval would otherwise stall every other payment the agent makes. Approve those exact terms in the store and the agent's retry settles. An approval is bound to one agent, one vendor and one exact amount, is spent on use, and is consumed *before* the rail is called — so a rail failure burns it and the human is asked again, which is the same direction the guard already rounds for an unconfirmed settlement.
+
+If the store cannot be read, or the approval cannot be claimed — a peer process may have taken it, or the store may be down — the payment blocks with `approval_unavailable` rather than `approval_required`. The guard cannot tell those two apart, so it asserts neither into a log whose entries are signed and permanent. Neither case latches the guard: payments below the threshold keep settling. A `freeze()` that lands while the gate is waiting on the store also stops the payment, with `kill_switch`, because the switch is re-read before the rail is called; an approval already spent by then stays spent and the human is asked again. One limit stated plainly: `fileApprovalStore` serializes consumes within a process, not across them, so two processes sharing one approval file can both spend one approval. Run one process per policy, or back the store with a database that locks.
+
+**Writing approvals is your job.** `fileApprovalStore` reads approvals and spends them; it has no write API, because deciding to release money is the human half of this feature and an agent's own process should not hold a pen for it. The file is a JSON array:
+
+```json
+[
+  {
+    "id": "apr_1",
+    "agent": "research-agent",
+    "vendorNormalized": "api.weather.com",
+    "amountMinor": "7500000",
+    "expiresAt": "2026-09-01T00:00:00.000Z",
+    "usedAt": null
+  }
+]
+```
+
+`amountMinor` is a **decimal string of USDC minor units** (`"7500000"` is 7.50), never a JSON number — a number cannot carry a u64 exactly. `agent` must match the guard's `agent`, and `vendorNormalized` must match what `normalizeVendor()` returns for the vendor URL. `expiresAt` is ISO 8601. `usedAt` must be present and explicitly `null` while unspent; the store stamps it with an ISO timestamp when the guard spends it. A record missing a field or carrying the wrong type throws a `SyntaxError` naming the file and the record — a malformed approval is never read as a quiet denial.
 
 `freeze()` means it: it closes the kill switch in memory before it returns, so every later `pay` is already blocked even while a payment is still waiting on a slow rail. Only its audit entry is queued behind that payment, which is what `flush()` waits for. Call it before exiting a process that just froze. Payments themselves stay strictly serialized, so two concurrent calls can never race the same budget. `unfreeze()` is queued in full: the switch may snap shut out of turn, never open out of turn.
 
@@ -136,6 +160,7 @@ depends on it rather than in the one that is actually stale.
 ```
 npm run demo -- --mock                            # five acts, no network, no keys
 npm run demo -- --x402                            # the x402 act, printing the HTTP handshake
+npm run demo -- --approvals                       # the approval act: blocked, approved, settled
 npm run demo                                      # direct mode against devnet; needs .env
 npm run vendor --workspace=@agentveins/demo       # the 402 vendor alone, on VENDOR_PORT
 ```
@@ -226,6 +251,7 @@ It sits between your agent and its money. Every wallet, rail, and framework is a
 - [x] Policy engine: budgets, allowlist, kill switch
 - [x] Solana devnet payment path (x402): **settled**, not merely verified — [`43ctpPA1…FmNte`](https://explorer.solana.com/tx/43ctpPA1RDqyoPoaTaJXngbot7TowVbUX6SQpmH9z5UQjT92AGFNA7kxasf4HTUVgaPHGL78gVdTvPLmn24FmNte?cluster=devnet) moved 0.01 USDC on devnet with the agent signing the transfer and the facilitator paying the fee. The facilitator is x402's reference implementation run in-process (`examples/demo/src/facilitator.ts`), not a hosted third party; settlement against someone else's facilitator is untested
 - [x] Signed audit log
+- [x] Approval workflows: a threshold above which a human must approve, bound to exact terms and spent on use
 - [ ] Base adapter
 - [ ] Velocity rules
 - [ ] Hosted dashboard: team policies, alerts, compliance exports
