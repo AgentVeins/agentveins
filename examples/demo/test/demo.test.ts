@@ -31,6 +31,16 @@ describe("runDemo", () => {
       expect(summary.result.error.code).toBe("price_mismatch");
     }
   });
+
+  it("blocks for approval, then settles once a human approves", async () => {
+    const lines: string[] = [];
+    const summary = await runDemo({ mock: true, approvals: true, logImpl: (line) => lines.push(line) });
+
+    const text = lines.join("\n");
+    expect(text).toContain("approval_required");
+    expect(text).toContain("operator approves");
+    expect(summary.kind).toBe("approval-act");
+  });
 });
 
 // I1: the demo printed violation.message straight to stdout, so an ANSI erase-line reaching the
