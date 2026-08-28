@@ -52,6 +52,15 @@ export function validatePolicy(policy: Policy): void {
     }
   }
 
+  if (policy.approvals !== undefined) {
+    if (policy.approvals === null || typeof policy.approvals !== "object") {
+      throw new RangeError("policy.approvals must be an object with an `above` threshold");
+    }
+    if (parseAmount(policy.approvals.above) < 0n) {
+      throw new RangeError("policy.approvals.above must not be negative");
+    }
+  }
+
   if (policy.killSwitch === null || typeof policy.killSwitch !== "object" || typeof policy.killSwitch.frozen !== "boolean") {
     throw new TypeError("policy.killSwitch.frozen must be a boolean");
   }

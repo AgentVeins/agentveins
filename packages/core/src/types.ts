@@ -17,6 +17,33 @@ export interface RecipientPolicy {
   entries: string[];
 }
 
+export interface ApprovalPolicy {
+  /** Payments strictly greater than this need a human approval. Minor-unit string, e.g. "5.00". */
+  above: string;
+}
+
+/** The exact terms a human approved. An approval authorises these terms and nothing else. */
+export interface ApprovalKey {
+  agent: string;
+  vendorNormalized: string;
+  amountMinor: bigint;
+}
+
+export interface Approval extends ApprovalKey {
+  id: string;
+  /** ISO 8601. Compared against the guard's clock, not the wall clock. */
+  expiresAt: string;
+  /** ISO 8601 once spent, null while unspent. */
+  usedAt: string | null;
+}
+
+export interface ApprovalStore {
+  /** Matches on the key alone. Expiry and prior use are the guard's to judge. */
+  find(key: ApprovalKey): Promise<Approval | null>;
+  /** Atomic. Throws if this approval was already consumed. */
+  consume(id: string): Promise<void>;
+}
+
 export interface KillSwitch {
   frozen: boolean;
 }
@@ -31,6 +58,7 @@ export interface Policy {
    * compromised can name any destination at or under the approved amount.
    */
   recipients?: RecipientPolicy;
+  approvals?: ApprovalPolicy;
   killSwitch: KillSwitch;
 }
 
@@ -39,7 +67,9 @@ export type ViolationCode =
   | "vendor_not_allowed"
   | "budget_exceeded"
   | "invalid_request"
-  | "audit_unavailable";
+  | "audit_unavailable"
+  | "approval_required"
+  | "approval_unavailable";
 
 export interface Violation {
   code: ViolationCode;

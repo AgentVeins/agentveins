@@ -89,3 +89,25 @@ describe("validatePolicy", () => {
     expect(() => validatePolicy(p)).toThrow(TypeError);
   });
 });
+
+describe("approval policy", () => {
+  it("accepts a well-formed threshold", () => {
+    expect(() => validatePolicy({ ...valid(), approvals: { above: "5.00" } })).not.toThrow();
+  });
+
+  it("accepts a policy with no approvals at all", () => {
+    expect(() => validatePolicy(valid())).not.toThrow();
+  });
+
+  it("rejects a threshold that is not an object", () => {
+    expect(() => validatePolicy({ ...valid(), approvals: "5.00" as never })).toThrow(RangeError);
+  });
+
+  it("rejects an unparseable threshold", () => {
+    expect(() => validatePolicy({ ...valid(), approvals: { above: "five" } })).toThrow();
+  });
+
+  it("rejects a negative threshold", () => {
+    expect(() => validatePolicy({ ...valid(), approvals: { above: "-1.00" } })).toThrow(RangeError);
+  });
+});
