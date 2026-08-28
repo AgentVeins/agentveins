@@ -39,7 +39,13 @@ describe("runDemo", () => {
     const text = lines.join("\n");
     expect(text).toContain("approval_required");
     expect(text).toContain("operator approves");
+    expect(text).toContain("the approval is spent");
+
     expect(summary.kind).toBe("approval-act");
+    if (summary.kind !== "approval-act") {
+      throw new Error("expected the approval act");
+    }
+    expect(summary.result.status).toBe("settled");
   });
 });
 

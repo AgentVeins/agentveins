@@ -349,7 +349,7 @@ async function runApprovalAct(options: DemoOptions, log: Logger): Promise<Approv
   const first = await guard.pay(request);
   if (first.status === "blocked") {
     log(`  ✗ payment BLOCKED  ${first.violation.code} — awaiting a human`);
-    log("      nothing signed, no chain call made");
+    log("      no chain call was made — the attempt is in the audit log, signed");
   }
 
   log("\n  operator approves 0.10 USDC to api.weather.com, once");
