@@ -1,12 +1,13 @@
 import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
+import { memoryApprovalStore } from "../src/approvals/memoryStore.js";
 import { memoryAnchorStore, sealAnchor, verifyAnchor } from "../src/audit/anchor.js";
 import { verifyAuditLog } from "../src/audit/entry.js";
 import { memoryAuditSink, type MemoryAuditSink } from "../src/audit/memorySink.js";
 import { createGuard, type Guard, type GuardOptions } from "../src/guard.js";
 import type {
-  Anchor, AnchorStore, AuditEntry, PayResult, Policy, SettlementReceipt, SettlementRequest,
-  WalletAdapter,
+  Anchor, AnchorStore, Approval, AuditEntry, PayResult, Policy, SettlementReceipt,
+  SettlementRequest, WalletAdapter,
 } from "../src/types.js";
 
 const keys = generateKeyPairSync("ed25519");
@@ -48,6 +49,29 @@ async function guardWith(adapter: WalletAdapter, sink: MemoryAuditSink = memoryA
     now: clock,
   });
   return { guard, sink };
+}
+
+/** A `fakeAdapter` whose `execute` is supplied directly, for tests that only care about timing. */
+function stubAdapter(execute: (req: SettlementRequest) => Promise<SettlementReceipt>): WalletAdapter {
+  return fakeAdapter({ execute: vi.fn(execute) });
+}
+
+/**
+ * `guardWith` fixes the adapter list and hands back `{ guard, sink }`; the approval-gate suite
+ * needs `policy` and `approvals` overridden together and just wants the guard back, so this
+ * builds `GuardOptions` from the same defaults and lets any field be overridden per test.
+ */
+function makeGuard(overrides: Partial<GuardOptions> = {}): Promise<Guard> {
+  return createGuard({
+    policy: policy(),
+    adapters: [fakeAdapter()],
+    audit: memoryAuditSink(),
+    agent: "demo-agent",
+    logId: LOG_ID,
+    signingKey: keys.privateKey,
+    now: clock,
+    ...overrides,
+  });
 }
 
 /** A sink whose append fails whenever the predicate says so; failures leave no entry behind. */
@@ -1015,5 +1039,129 @@ describe("guard.freeze closes before it is written", () => {
     const results = await Promise.all(Array.from({ length: 40 }, () => guard.pay(request)));
     expect(results.filter((result) => result.status === "settled")).toHaveLength(10);
     expect(results.filter((result) => result.status === "blocked")).toHaveLength(30);
+  });
+});
+
+describe("approval gate", () => {
+  const approvalPolicy = { ...policy(), approvals: { above: "0.05" } };
+
+  function pendingApproval(): Approval {
+    return {
+      agent: "demo-agent",
+      vendorNormalized: "api.weather.com",
+      amountMinor: 100_000n,
+      id: "apr_1",
+      expiresAt: "2999-01-01T00:00:00.000Z",
+      usedAt: null,
+    };
+  }
+
+  it("blocks a payment above the threshold when no approval exists", async () => {
+    const guard = await makeGuard({ policy: approvalPolicy, approvals: memoryApprovalStore([]) });
+    const result = await guard.pay({ to: "https://api.weather.com/f", amount: "0.10", currency: "USDC", reason: "r" });
+
+    expect(result.status).toBe("blocked");
+    if (result.status !== "blocked") throw new Error("expected blocked");
+    expect(result.violation.code).toBe("approval_required");
+    expect(result.auditId).not.toBe("");
+  });
+
+  it("lets a payment at exactly the threshold through untouched", async () => {
+    const guard = await makeGuard({ policy: approvalPolicy, approvals: memoryApprovalStore([]) });
+    const result = await guard.pay({ to: "https://api.weather.com/f", amount: "0.05", currency: "USDC", reason: "r" });
+
+    expect(result.status).toBe("settled");
+  });
+
+  it("settles once an approval exists and spends it", async () => {
+    const store = memoryApprovalStore([pendingApproval()]);
+    const guard = await makeGuard({ policy: approvalPolicy, approvals: store });
+    const result = await guard.pay({ to: "https://api.weather.com/f", amount: "0.10", currency: "USDC", reason: "r" });
+
+    expect(result.status).toBe("settled");
+    expect(store.approvals[0]?.usedAt).not.toBeNull();
+  });
+
+  it("blocks a second payment on a spent approval", async () => {
+    const store = memoryApprovalStore([pendingApproval()]);
+    const guard = await makeGuard({ policy: approvalPolicy, approvals: store });
+    const req = { to: "https://api.weather.com/f", amount: "0.10", currency: "USDC" as const, reason: "r" };
+
+    expect((await guard.pay(req)).status).toBe("settled");
+    const second = await guard.pay(req);
+
+    expect(second.status).toBe("blocked");
+    if (second.status !== "blocked") throw new Error("expected blocked");
+    expect(second.violation.code).toBe("approval_required");
+  });
+
+  it("consumes the approval before the rail is called", async () => {
+    const order: string[] = [];
+    const store = memoryApprovalStore([pendingApproval()]);
+    const wrapped = {
+      find: store.find.bind(store),
+      consume: async (id: string) => {
+        order.push("consume");
+        await store.consume(id);
+      },
+    };
+    const adapter = stubAdapter(async () => {
+      order.push("execute");
+      return { txSig: "sig", rail: "solana" };
+    });
+    const guard = await makeGuard({ policy: approvalPolicy, approvals: wrapped, adapters: [adapter] });
+
+    await guard.pay({ to: "https://api.weather.com/f", amount: "0.10", currency: "USDC", reason: "r" });
+
+    expect(order).toEqual(["consume", "execute"]);
+  });
+
+  it("keeps the approval spent when the rail then fails", async () => {
+    const store = memoryApprovalStore([pendingApproval()]);
+    const adapter = stubAdapter(async () => {
+      throw new Error("rail down");
+    });
+    const guard = await makeGuard({ policy: approvalPolicy, approvals: store, adapters: [adapter] });
+
+    expect((await guard.pay({ to: "https://api.weather.com/f", amount: "0.10", currency: "USDC", reason: "r" })).status).toBe("failed");
+    expect(store.approvals[0]?.usedAt).not.toBeNull();
+  });
+
+  it("blocks with approval_unavailable when the store cannot be read", async () => {
+    const broken = {
+      find: async () => {
+        throw new Error("store down");
+      },
+      consume: async () => undefined,
+    };
+    const guard = await makeGuard({ policy: approvalPolicy, approvals: broken });
+    const result = await guard.pay({ to: "https://api.weather.com/f", amount: "0.10", currency: "USDC", reason: "r" });
+
+    expect(result.status).toBe("blocked");
+    if (result.status !== "blocked") throw new Error("expected blocked");
+    expect(result.violation.code).toBe("approval_unavailable");
+  });
+
+  it("keeps paying below the threshold while the store is down", async () => {
+    const broken = {
+      find: async () => {
+        throw new Error("store down");
+      },
+      consume: async () => undefined,
+    };
+    const guard = await makeGuard({ policy: approvalPolicy, approvals: broken });
+
+    expect((await guard.pay({ to: "https://api.weather.com/f", amount: "0.01", currency: "USDC", reason: "r" })).status).toBe("settled");
+  });
+
+  it("refuses to construct a guard whose threshold has no store behind it", async () => {
+    await expect(makeGuard({ policy: approvalPolicy })).rejects.toThrow(/approval/i);
+  });
+
+  it("ignores a store when the policy sets no threshold", async () => {
+    const store = memoryApprovalStore([]);
+    const guard = await makeGuard({ policy: policy(), approvals: store });
+
+    expect((await guard.pay({ to: "https://api.weather.com/f", amount: "0.10", currency: "USDC", reason: "r" })).status).toBe("settled");
   });
 });

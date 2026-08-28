@@ -1,15 +1,16 @@
 import { createPublicKey, randomUUID, type KeyObject } from "node:crypto";
+import { decideApproval, type ApprovalDecision } from "./approvals/decide.js";
 import { sealAnchor, verifyAnchor } from "./audit/anchor.js";
 import { hashEntry, signHash, verifyAuditLog } from "./audit/entry.js";
 import { CHECKS } from "./checks/index.js";
 import { InvalidRequestError } from "./errors.js";
-import { parseAmount } from "./money.js";
+import { formatAmount, parseAmount } from "./money.js";
 import { validatePolicy } from "./policy.js";
 import { sanitizePaymentError, sanitizeSignature, sanitizeViolation } from "./sanitize.js";
 import { applyEntry, emptyState, replay } from "./state.js";
 import type {
-  Anchor, AnchorStore, AuditEntry, AuditOutcome, AuditSink, PayRequest, PayResult, PaymentError,
-  Policy, SpendState, UnsignedAuditEntry, Violation, WalletAdapter, WindowState,
+  Anchor, AnchorStore, ApprovalStore, AuditEntry, AuditOutcome, AuditSink, PayRequest, PayResult,
+  PaymentError, Policy, SpendState, UnsignedAuditEntry, Violation, WalletAdapter, WindowState,
 } from "./types.js";
 import { normalizeVendor } from "./vendor.js";
 
@@ -22,6 +23,7 @@ export interface GuardOptions {
   signingKey: KeyObject;
   verifyingKey?: KeyObject;
   anchor?: AnchorStore;
+  approvals?: ApprovalStore;
   requirePersistedState?: boolean;
   now?: () => Date;
 }
@@ -128,9 +130,15 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
   if (options.verifyingKey !== undefined && options.verifyingKey.type !== "public") {
     throw new TypeError("verifyingKey must be a public KeyObject");
   }
+  if (options.policy.approvals !== undefined && options.approvals === undefined) {
+    throw new RangeError(
+      "policy.approvals sets a threshold but no approval store was supplied; every payment above it would block with no way to approve one",
+    );
+  }
 
   const { policy, adapters, audit, agent, logId, signingKey } = options;
   const anchorStore = options.anchor;
+  const approvalStore = options.approvals;
   const verifyingKey = options.verifyingKey ?? createPublicKey(signingKey);
   const clock = options.now ?? (() => new Date());
   const readLog = audit.read?.bind(audit);
@@ -363,6 +371,66 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
         txSig: null, rail: adapter.name, ts: auditTs, applyWhenUnrecorded: true,
       });
       return { status: "blocked", violation, auditId: outcome.id };
+    }
+
+    // Approval runs after the checks and never as one of them: `Check` is synchronous and pure,
+    // which is why the policy suite needs no I/O, and a store lookup is I/O. It runs last because
+    // asking a person to rule on a payment the budget already forbids is asking the wrong
+    // question.
+    if (policy.approvals !== undefined && approvalStore !== undefined) {
+      const threshold = parseAmount(policy.approvals.above);
+      if (amountMinor > threshold) {
+        const key = { agent, vendorNormalized, amountMinor };
+        let decision: ApprovalDecision;
+        let approvalId: string | null = null;
+        try {
+          const found = await approvalStore.find(key);
+          decision = decideApproval(found, key, ts);
+          approvalId = found === null ? null : found.id;
+        } catch {
+          // Unlike the audit sink this does not latch: only payments above the threshold are
+          // affected, and everything below stays governed by the checks that already ran.
+          const unavailable = sanitizeViolation({
+            code: "approval_unavailable",
+            message: "the approval store could not be reached, so this payment cannot be authorized",
+          });
+          const outcome = await write({
+            kind: "payment", vendor: req.to, vendorNormalized, amountMinor,
+            reason: req.reason, outcome: "blocked", violation: unavailable, error: null,
+            txSig: null, rail: adapter.name, ts: auditTs, applyWhenUnrecorded: true,
+          });
+          return { status: "blocked", violation: unavailable, auditId: outcome.id };
+        }
+
+        if (decision === "grant" && approvalId !== null) {
+          try {
+            // Before the rail, never after: a crash between broadcast and consume would leave the
+            // approval unspent and let the agent replay a payment a person sanctioned once. The
+            // cost is that a rail failure burns it and the person is asked again.
+            await approvalStore.consume(approvalId);
+          } catch {
+            decision = "used";
+          }
+        }
+
+        if (decision !== "grant") {
+          const required = sanitizeViolation({
+            code: "approval_required",
+            message: "this payment is above the approval threshold and needs a human approval",
+            detail: {
+              threshold: policy.approvals.above,
+              attempted: formatAmount(amountMinor),
+              reason: decision,
+            },
+          });
+          const outcome = await write({
+            kind: "payment", vendor: req.to, vendorNormalized, amountMinor,
+            reason: req.reason, outcome: "blocked", violation: required, error: null,
+            txSig: null, rail: adapter.name, ts: auditTs, applyWhenUnrecorded: true,
+          });
+          return { status: "blocked", violation: required, auditId: outcome.id };
+        }
+      }
     }
 
     // The rail call owns this try and nothing else: a failure to record the result must never
