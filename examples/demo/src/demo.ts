@@ -421,9 +421,8 @@ async function runApprovalAct(options: DemoOptions, log: Logger): Promise<Approv
     log("\n  review it the way an operator would:");
     log("      npm i -g @agentveins/cli      # once; or use npx veins in this repo");
     log("      cd examples/demo");
-    const verify = options.publicKeyPath === undefined ? "" : " --verify ./operator.pub.pem";
-    log(`      veins pending${verify}`);
-    log(`      veins approve 1 --ttl 15m${verify}`);
+    log("      veins pending                  # paths and key come from veins.config.json");
+    log("      veins approve 1");
   }
 
   return { kind: "approval-act", result: second };
@@ -503,7 +502,7 @@ async function runHoldAct(options: DemoOptions, log: Logger): Promise<HoldActSum
     log("      no chain call was made — the attempt is in the audit log, signed");
     log("\n  nothing happens until a person decides. You are the person:");
     log("      cd examples/demo");
-    log("      veins approve 1 --ttl 15m --verify ./operator.pub.pem");
+    log("      veins approve 1                # veins.config.json supplies the rest");
     log("      npm run demo -- --hold        # then the agent settles\n");
     return { kind: "hold-act", result };
   }

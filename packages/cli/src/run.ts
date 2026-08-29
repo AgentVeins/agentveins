@@ -58,6 +58,9 @@ export async function run(options: Options, io: Io): Promise<number> {
     return 0;
   }
 
+  if (options.configPath !== null) {
+    io.out(`  config ${options.configPath}\n`);
+  }
   const approvals: ApprovalStore = fileApprovalStore(options.approvals);
   const entries = await loadEntries(options, io);
   const pending = await readPending(entries, approvals, io.now());

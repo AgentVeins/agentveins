@@ -6,8 +6,13 @@ import { createGuard, memoryApprovalStore } from "@agentveins/core";
 import { fileAuditSink } from "@agentveins/core/fs";
 import type { Policy, WalletAdapter } from "@agentveins/core";
 import { describe, expect, it } from "vitest";
-import { parseArgs } from "../src/args.js";
+import { parseArgs, resolveOptions } from "../src/args.js";
 import { run, type Io } from "../src/run.js";
+
+/** The tests drive fully-specified command lines, so no config participates. */
+function opts(argv: string[]) {
+  return resolveOptions(parseArgs(argv), { config: {}, dir: null, path: null });
+}
 
 const now = new Date("2026-08-30T12:00:00.000Z");
 
@@ -67,7 +72,7 @@ describe("veins", () => {
     const { log, approvals } = await workspace();
     const io = recorder();
 
-    const code = await run(parseArgs(["pending", "--log", log, "--approvals", approvals]), io);
+    const code = await run(opts(["pending", "--log", log, "--approvals", approvals]), io);
 
     expect(code).toBe(0);
     expect(io.text).toContain("pending approvals — 1");
@@ -79,7 +84,7 @@ describe("veins", () => {
     const { log, approvals } = await workspace();
     const io = recorder(["1", "y"]);
 
-    await run(parseArgs(["approve", "--log", log, "--approvals", approvals, "--ttl", "15m"]), io);
+    await run(opts(["approve", "--log", log, "--approvals", approvals, "--ttl", "15m"]), io);
 
     expect(io.text).toContain("granted");
     const written = JSON.parse(await readFile(approvals, "utf8")) as Array<Record<string, unknown>>;
@@ -96,7 +101,7 @@ describe("veins", () => {
     const { log, approvals } = await workspace();
     const io = recorder(["1", "n"]);
 
-    await run(parseArgs(["approve", "--log", log, "--approvals", approvals]), io);
+    await run(opts(["approve", "--log", log, "--approvals", approvals]), io);
 
     expect(io.text).toContain("nothing granted");
     await expect(readFile(approvals, "utf8")).rejects.toThrow();
@@ -106,17 +111,17 @@ describe("veins", () => {
     const { log, approvals } = await workspace();
     const io = recorder([]);
 
-    await run(parseArgs(["approve", "--log", log, "--approvals", approvals]), io);
+    await run(opts(["approve", "--log", log, "--approvals", approvals]), io);
 
     expect(io.text).toContain("nothing granted");
   });
 
   it("stops showing a payment once it is approved", async () => {
     const { log, approvals } = await workspace();
-    await run(parseArgs(["approve", "1", "--yes", "--log", log, "--approvals", approvals]), recorder());
+    await run(opts(["approve", "1", "--yes", "--log", log, "--approvals", approvals]), recorder());
 
     const io = recorder();
-    await run(parseArgs(["pending", "--log", log, "--approvals", approvals]), io);
+    await run(opts(["pending", "--log", log, "--approvals", approvals]), io);
 
     expect(io.text).toContain("pending approvals — 0");
     expect(io.text).toContain("nothing is waiting on you");
@@ -126,7 +131,7 @@ describe("veins", () => {
     const { log, approvals, publicKey } = await workspace();
     const io = recorder();
 
-    await run(parseArgs(["pending", "--log", log, "--approvals", approvals, "--verify", publicKey]), io);
+    await run(opts(["pending", "--log", log, "--approvals", approvals, "--verify", publicKey]), io);
 
     expect(io.text).toContain("log verified");
   });
@@ -137,7 +142,7 @@ describe("veins", () => {
     await writeFile(log, raw.replace('"amountMinor":"100000"', '"amountMinor":"1"'), "utf8");
 
     await expect(
-      run(parseArgs(["approve", "--log", log, "--approvals", approvals, "--verify", publicKey]), recorder(["1", "y"])),
+      run(opts(["approve", "--log", log, "--approvals", approvals, "--verify", publicKey]), recorder(["1", "y"])),
     ).rejects.toThrow(/failed verification/);
   });
 
@@ -145,7 +150,7 @@ describe("veins", () => {
     const { log, approvals } = await workspace();
 
     await expect(
-      run(parseArgs(["approve", "--yes", "--log", log, "--approvals", approvals]), recorder()),
+      run(opts(["approve", "--yes", "--log", log, "--approvals", approvals]), recorder()),
     ).rejects.toThrow(/needs a row number/);
   });
 });

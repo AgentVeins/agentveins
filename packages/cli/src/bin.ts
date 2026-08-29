@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { createInterface } from "node:readline/promises";
 import process from "node:process";
-import { parseArgs } from "./args.js";
+import { parseArgs, resolveOptions } from "./args.js";
+import { loadConfig } from "./config.js";
 import { run } from "./run.js";
 
 const io = {
@@ -27,7 +28,9 @@ const io = {
 };
 
 try {
-  process.exitCode = await run(parseArgs(process.argv.slice(2)), io);
+  const parsed = parseArgs(process.argv.slice(2));
+  const loaded = await loadConfig(process.cwd(), parsed.config);
+  process.exitCode = await run(resolveOptions(parsed, loaded), io);
 } catch (error) {
   process.stderr.write(`\n  ${error instanceof Error ? error.message : String(error)}\n\n`);
   process.exitCode = 1;
