@@ -1,6 +1,6 @@
 {
   "name": "@agentveins/adapter-solana",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Solana wallet adapter for AgentVeins: USDC settlement on devnet, direct or x402.",
   "license": "MIT",
   "type": "module",
@@ -31,7 +31,7 @@
     "dist"
   ],
   "dependencies": {
-    "@agentveins/core": "^0.3.0",
+    "@agentveins/core": "^0.4.0",
     "@solana-program/token": "^0.15.0",
     "@solana/kit": "^7.0.0",
     "@x402/core": "^2.22.0"
