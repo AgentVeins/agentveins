@@ -1,6 +1,6 @@
 {
   "name": "@agentveins/core",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Spend governance for AI agents: budgets, allowlists, kill switch, signed audit log.",
   "license": "MIT",
   "type": "module",
