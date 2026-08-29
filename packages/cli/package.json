@@ -1,0 +1,43 @@
+{
+  "name": "@agentveins/cli",
+  "version": "0.2.0",
+  "description": "Review and approve the payments an AgentVeins guard is holding for a human.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AgentVeins/agentveins.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/AgentVeins/agentveins#readme",
+  "bugs": "https://github.com/AgentVeins/agentveins/issues",
+  "keywords": [
+    "ai-agents",
+    "payments",
+    "approvals",
+    "spend-controls",
+    "cli"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "veins": "./dist/bin.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@agentveins/core": "^0.2.0"
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "prepublishOnly": "tsc --build --force && vitest run --root ../..",
+    "typecheck": "tsc -p tsconfig.test.json"
+  }
+}

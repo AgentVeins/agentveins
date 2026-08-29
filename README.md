@@ -119,6 +119,22 @@ await approvals.grant({
 
 Two grants on the same terms are two authorisations, not one reusable one: a human approving twice authorises twice. The file format below is what `grant()` writes, documented because operators back this with their own storage — a database, a queue, an approvals UI — and an `ApprovalStore` is three methods.
 
+`@agentveins/cli` is a working example of that routing — a person at a terminal:
+
+```bash
+npx @agentveins/cli pending --verify ./operator.pub.pem
+npx @agentveins/cli approve 1 --ttl 15m --verify ./operator.pub.pem
+```
+
+It reads the audit log, folds an agent's retries into one decision rather than five, hides
+payments an unspent approval already covers, and writes the grant where the guard will look for
+it. Pass `--verify` and it checks the log's signatures first and refuses to approve against a log
+that fails — approving on the strength of a tampered record is the failure this project exists to
+make visible. Without the flag it reads a file it cannot prove is intact, and says so.
+
+It is a reference, not the answer. Approvals belong wherever your organisation already makes
+decisions, and an `ApprovalStore` is three methods.
+
 AgentVeins does not ask anyone for approval. It records the decision and enforces it; routing the request to a person is yours, because who approves what belongs to your organisation and not to this SDK. Everything needed is already in the denial: `pay()` returns `blocked` with `approval_required`, and the same attempt lands in the audit log with the agent, vendor, amount and reason — so the log doubles as the queue of what is waiting, and each entry's `auditId` identifies the request.
 
 `amountMinor` is a **decimal string of USDC minor units** (`"7500000"` is 7.50), never a JSON number — a number cannot carry a u64 exactly. `agent` must match the guard's `agent`, and `vendorNormalized` must match what `normalizeVendor()` returns for the vendor URL. `expiresAt` is ISO 8601. `usedAt` must be present and explicitly `null` while unspent; the store stamps it with an ISO timestamp when the guard spends it. A record missing a field or carrying the wrong type throws a `SyntaxError` naming the file and the record — a malformed approval is never read as a quiet denial.
@@ -178,6 +194,9 @@ depends on it rather than in the one that is actually stale.
 npm run demo -- --mock                            # five acts, no network, no keys
 npm run demo -- --x402                            # the x402 act, printing the HTTP handshake
 npm run demo -- --approvals                       # the approval act: blocked, approved, settled
+
+npx @agentveins/cli pending                       # what is waiting on a person
+npx @agentveins/cli approve 1 --ttl 15m           # grant the first row
 npm run demo                                      # direct mode against devnet; needs .env
 npm run vendor --workspace=@agentveins/demo       # the 402 vendor alone, on VENDOR_PORT
 ```
