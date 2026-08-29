@@ -1,3 +1,7 @@
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileApprovalStore } from "@agentveins/core/fs";
 import { describe, expect, it } from "vitest";
 import { createVendorApp } from "../src/vendor.js";
 import { runDemo } from "../src/demo.js";
@@ -74,5 +78,65 @@ describe("the transcript never emits raw terminal control sequences", () => {
       // control character, because every value on a line is escaped before it is rendered.
       expect(hasControlChars(line.replace(/^\n+/, ""))).toBe(false);
     }
+  });
+});
+
+describe("hold mode", () => {
+  it("stops at the block, then settles once a person has approved between runs", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "veins-hold-"));
+    const paths = {
+      auditPath: join(dir, "audit.jsonl"),
+      approvalsPath: join(dir, "approvals.json"),
+      publicKeyPath: join(dir, "operator.pub.pem"),
+      privateKeyPath: join(dir, "operator.key.pem"),
+    };
+
+    const first = await runDemo({ hold: true, quiet: true, ...paths });
+    if (first.kind !== "hold-act") throw new Error("expected the hold act");
+    expect(first.result.status).toBe("blocked");
+
+    // The operator's step, done the way the CLI does it — through the store's own API.
+    const store = fileApprovalStore(paths.approvalsPath);
+    await store.grant({
+      agent: "weather-agent",
+      vendorNormalized: "api.weather.com",
+      amountMinor: 100_000n,
+      expiresAt: new Date(Date.now() + 900_000).toISOString(),
+    });
+
+    // A second guard over the same files: the log must verify under the persisted key, or this
+    // throws rather than settling.
+    const second = await runDemo({ hold: true, quiet: true, ...paths });
+    if (second.kind !== "hold-act") throw new Error("expected the hold act");
+    expect(second.result.status).toBe("settled");
+
+    // Single-use holds across processes too.
+    const third = await runDemo({ hold: true, quiet: true, ...paths });
+    if (third.kind !== "hold-act") throw new Error("expected the hold act");
+    expect(third.result.status).toBe("blocked");
+  });
+
+  it("clears everything on --reset so the next run starts from nothing", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "veins-hold-"));
+    const paths = {
+      auditPath: join(dir, "audit.jsonl"),
+      approvalsPath: join(dir, "approvals.json"),
+      publicKeyPath: join(dir, "operator.pub.pem"),
+      privateKeyPath: join(dir, "operator.key.pem"),
+    };
+
+    await runDemo({ hold: true, quiet: true, ...paths });
+    const store = fileApprovalStore(paths.approvalsPath);
+    await store.grant({
+      agent: "weather-agent",
+      vendorNormalized: "api.weather.com",
+      amountMinor: 100_000n,
+      expiresAt: new Date(Date.now() + 900_000).toISOString(),
+    });
+
+    const afterReset = await runDemo({ hold: true, reset: true, quiet: true, ...paths });
+    if (afterReset.kind !== "hold-act") throw new Error("expected the hold act");
+    // The approval went with the reset, so the agent is asking again rather than settling.
+    expect(afterReset.result.status).toBe("blocked");
   });
 });
