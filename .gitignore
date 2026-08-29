@@ -15,3 +15,6 @@ CLAUDE.md
 
 # Devnet keypairs — generated locally, never committed
 examples/demo/devnet-*.json
+
+# The approval act writes a real store here so the CLI has something to read
+examples/demo/approvals.json
