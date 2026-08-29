@@ -399,14 +399,19 @@ async function runApprovalAct(options: DemoOptions, log: Logger): Promise<Approv
   log("  the approval is spent: an identical payment would be blocked again");
 
   if (options.auditPath !== undefined && options.approvalsPath !== undefined) {
+    // Printed relative to the demo package, and as the commands to type rather than the paths
+    // they resolve to: the CLI already defaults to ./audit.jsonl and ./approvals.json, so a
+    // reader who cds here needs no path flags at all. Absolute paths are unambiguous and
+    // unusable, and what a demo prints is what people learn.
     log("\n  the operator's side of this is a real log on disk, not a fixture:");
-    log(`      ${options.auditPath}`);
-    log(`      ${options.approvalsPath}`);
+    log("      examples/demo/audit.jsonl");
+    log("      examples/demo/approvals.json");
     log("\n  review it the way an operator would:");
-    const verify = options.publicKeyPath === undefined ? "" : ` --verify ${options.publicKeyPath}`;
-    log(
-      `      npx @agentveins/cli pending --log ${options.auditPath} --approvals ${options.approvalsPath}${verify}`,
-    );
+    log("      npm i -g @agentveins/cli      # once; or use npx veins in this repo");
+    log("      cd examples/demo");
+    const verify = options.publicKeyPath === undefined ? "" : " --verify ./operator.pub.pem";
+    log(`      veins pending${verify}`);
+    log(`      veins approve 1 --ttl 15m${verify}`);
   }
 
   return { kind: "approval-act", result: second };
