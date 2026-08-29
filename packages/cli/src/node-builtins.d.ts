@@ -15,3 +15,4 @@
 /// <reference path="../../../node_modules/@types/node/events.d.ts" />
 /// <reference path="../../../node_modules/@types/node/buffer.d.ts" />
 /// <reference path="../../../node_modules/@types/node/buffer.buffer.d.ts" />
+/// <reference path="../../../node_modules/@types/node/path.d.ts" />

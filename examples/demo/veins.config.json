@@ -1,0 +1,6 @@
+{
+  "log": "./audit.jsonl",
+  "approvals": "./approvals.json",
+  "verify": "./operator.pub.pem",
+  "ttl": "30m"
+}

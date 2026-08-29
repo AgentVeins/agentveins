@@ -121,6 +121,15 @@ Two grants on the same terms are two authorisations, not one reusable one: a hum
 
 `npm run demo -- --hold` is that loop with the human step left to a human. The agent is blocked and the demo exits; you approve with the CLI; you run it again and it settles. Three commands and two processes, which is also the only path here that exercises one process writing an approval store and another reading it.
 
+Paths and the verifying key belong in a `veins.config.json`, found in the working directory or any parent, so an operator running it from anywhere under a service directory types no flags:
+
+```json
+{ "log": "./audit.jsonl", "approvals": "./approvals.json",
+  "verify": "/etc/pricewatch/operator.pub.pem", "ttl": "30m" }
+```
+
+Flags beat the file, and relative paths in it resolve against the file itself rather than your working directory — it is found by walking up, so the same config read from two directories must not point at two different logs. An unknown key is an error rather than something ignored: a misspelled `verify` would otherwise leave an operator believing every approval was checked against a signed log when none were.
+
 `@agentveins/cli` is a working example of that routing — a person at a terminal:
 
 ```bash
