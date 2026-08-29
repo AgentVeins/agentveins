@@ -18,3 +18,4 @@ examples/demo/devnet-*.json
 
 # The approval act writes a real store here so the CLI has something to read
 examples/demo/approvals.json
+examples/demo/operator.pub.pem

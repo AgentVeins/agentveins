@@ -1,7 +1,7 @@
 import { generateKeyPairSync } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { webcrypto } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import type { Server } from "node:http";
 import {
   createGuard,
@@ -32,6 +32,8 @@ export interface DemoOptions {
    */
   auditPath?: string;
   approvalsPath?: string;
+  /** Where to leave the public key, so `veins --verify` can be demonstrated against the log. */
+  publicKeyPath?: string;
   quiet?: boolean;
   /** Test-only seam: routes the x402 act's vendor call through this instead of a real listener. */
   fetchImpl?: typeof fetch;
@@ -340,6 +342,25 @@ async function runApprovalAct(options: DemoOptions, log: Logger): Promise<Approv
       : fileApprovalStore(options.approvalsPath);
   const policy: Policy = { ...buildPolicy("api.weather.com"), approvals: { above: "0.05" } };
   const keys = generateKeyPairSync("ed25519");
+
+  // Each run starts clean. The signing key is generated per run, so a log left by a previous run
+  // was signed by a key that no longer exists and the guard would refuse to start on it — rightly,
+  // since that is indistinguishable from a forged log. Keeping the key instead would trade this
+  // for a slower failure: the daily budget replays too, and the act would eventually block on
+  // spend rather than on approval, which demonstrates the wrong thing.
+  if (options.auditPath !== undefined) {
+    await rm(options.auditPath, { force: true });
+  }
+  if (options.approvalsPath !== undefined) {
+    await rm(options.approvalsPath, { force: true });
+  }
+  if (options.publicKeyPath !== undefined) {
+    await writeFile(
+      options.publicKeyPath,
+      keys.publicKey.export({ type: "spki", format: "pem" }).toString(),
+      "utf8",
+    );
+  }
   const audit =
     options.auditPath === undefined ? memoryAuditSink() : fileAuditSink(options.auditPath);
   const guard = await createGuard({
@@ -382,7 +403,10 @@ async function runApprovalAct(options: DemoOptions, log: Logger): Promise<Approv
     log(`      ${options.auditPath}`);
     log(`      ${options.approvalsPath}`);
     log("\n  review it the way an operator would:");
-    log(`      npx @agentveins/cli pending --log ${options.auditPath} --approvals ${options.approvalsPath}`);
+    const verify = options.publicKeyPath === undefined ? "" : ` --verify ${options.publicKeyPath}`;
+    log(
+      `      npx @agentveins/cli pending --log ${options.auditPath} --approvals ${options.approvalsPath}${verify}`,
+    );
   }
 
   return { kind: "approval-act", result: second };
@@ -412,6 +436,7 @@ if (process.argv[1]?.endsWith("demo.ts")) {
       ? {
           auditPath: fileURLToPath(new URL("../audit.jsonl", import.meta.url)),
           approvalsPath: fileURLToPath(new URL("../approvals.json", import.meta.url)),
+          publicKeyPath: fileURLToPath(new URL("../operator.pub.pem", import.meta.url)),
         }
       : {}),
   });
