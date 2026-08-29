@@ -1,6 +1,6 @@
-import { generateKeyPairSync } from "node:crypto";
+import { createPrivateKey, generateKeyPairSync } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import type { webcrypto } from "node:crypto";
+import type { KeyObject, webcrypto } from "node:crypto";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import type { Server } from "node:http";
 import {
@@ -26,6 +26,10 @@ export interface DemoOptions {
   mock?: boolean;
   x402?: boolean;
   approvals?: boolean;
+  /** Stops at the block instead of approving itself, so a person does that step for real. */
+  hold?: boolean;
+  /** Clears the held log, store and key so the next --hold run starts from nothing. */
+  reset?: boolean;
   /**
    * Where the approval act keeps its log and store. Left unset the act runs in memory, which is
    * what the tests want; set, it leaves the artifacts `@agentveins/cli` reads.
@@ -34,6 +38,9 @@ export interface DemoOptions {
   approvalsPath?: string;
   /** Where to leave the public key, so `veins --verify` can be demonstrated against the log. */
   publicKeyPath?: string;
+  /** Where --hold keeps its signing key. It must survive between runs or the guard, replaying a
+   *  log signed by a key that no longer exists, would rightly refuse to start. */
+  privateKeyPath?: string;
   quiet?: boolean;
   /** Test-only seam: routes the x402 act's vendor call through this instead of a real listener. */
   fetchImpl?: typeof fetch;
@@ -60,7 +67,12 @@ export interface ApprovalActSummary {
   result: PayResult;
 }
 
-export type DemoSummary = FiveActSummary | X402ActSummary | ApprovalActSummary;
+export interface HoldActSummary {
+  kind: "hold-act";
+  result: PayResult;
+}
+
+export type DemoSummary = FiveActSummary | X402ActSummary | ApprovalActSummary | HoldActSummary;
 
 type Logger = (line: string) => void;
 
@@ -417,11 +429,119 @@ async function runApprovalAct(options: DemoOptions, log: Logger): Promise<Approv
   return { kind: "approval-act", result: second };
 }
 
+
+/**
+ * The same governance as the approval act, with the human step left to a human.
+ *
+ * The approval act performs the operator's decision itself, which keeps it self-contained but
+ * means the CLI is never load-bearing: by the time anyone runs it the agent has gone home and
+ * nothing can settle. This one stops at the block. A person approves, runs it again, and the
+ * payment goes through — two processes sharing one store, which is also the only path in this
+ * repo that exercises a store being written by one process and read by another.
+ *
+ * The signing key persists here, unlike everywhere else. A guard replays its log at startup and
+ * refuses one it cannot verify, so a per-run key would make the second run impossible. Devnet
+ * demo key, gitignored, and `--reset` throws it away with everything else.
+ */
+async function runHoldAct(options: DemoOptions, log: Logger): Promise<HoldActSummary> {
+  const auditPath = options.auditPath ?? "./audit.jsonl";
+  const approvalsPath = options.approvalsPath ?? "./approvals.json";
+
+  if (options.reset === true) {
+    await rm(auditPath, { force: true });
+    await rm(approvalsPath, { force: true });
+    if (options.privateKeyPath !== undefined) {
+      await rm(options.privateKeyPath, { force: true });
+    }
+    log("  cleared the held log, store and key\n");
+  }
+
+  const signingKey = await loadOrCreateKey(options);
+  const store = fileApprovalStore(approvalsPath);
+  const guard = await createGuard({
+    // A wider daily budget than the other acts: this one is meant to be run over and over while
+    // someone learns the loop, and blocking on spend after five cycles would teach the wrong rule.
+    policy: {
+      ...buildPolicy("api.weather.com"),
+      budgets: [
+        { period: "per_tx", limit: "0.10", currency: "USDC" },
+        { period: "daily", limit: "5.00", currency: "USDC" },
+      ],
+      approvals: { above: "0.05" },
+    },
+    adapters: [mockAdapter()],
+    audit: fileAuditSink(auditPath),
+    agent: "weather-agent",
+    logId: "weather-agent-hold-demo",
+    signingKey,
+    approvals: store,
+  });
+
+  const request = {
+    to: "https://api.weather.com/forecast",
+    amount: "0.10",
+    currency: "USDC" as const,
+    reason: "bulk forecast",
+  };
+
+  log("\n── The hold: the agent waits on a person ────");
+  log("  approval threshold    0.05 USDC");
+  log("  the agent requests    0.10 USDC");
+
+  const result = await guard.pay(request);
+  await guard.flush();
+
+  if (result.status === "settled") {
+    log(`  ✓ payment settled  tx=${result.txSig}`);
+    log("  the approval you granted is spent; another payment needs another decision");
+    log("\n  run it again to be asked again, or --reset to start from nothing\n");
+    return { kind: "hold-act", result };
+  }
+
+  if (result.status === "blocked") {
+    log(`  ✗ payment BLOCKED  ${result.violation.code} — waiting for you`);
+    log("      no chain call was made — the attempt is in the audit log, signed");
+    log("\n  nothing happens until a person decides. You are the person:");
+    log("      cd examples/demo");
+    log("      veins approve 1 --ttl 15m --verify ./operator.pub.pem");
+    log("      npm run demo -- --hold        # then the agent settles\n");
+    return { kind: "hold-act", result };
+  }
+
+  log(`  ! payment failed   ${result.error.code} — ${safe(result.error.message, MESSAGE_MAX)}`);
+  return { kind: "hold-act", result };
+}
+
+/** Loads the demo's signing key, creating it on first run and publishing its public half. */
+async function loadOrCreateKey(options: DemoOptions): Promise<KeyObject> {
+  const path = options.privateKeyPath;
+  if (path === undefined) {
+    return generateKeyPairSync("ed25519").privateKey;
+  }
+  try {
+    return createPrivateKey(await readFile(path, "utf8"));
+  } catch {
+    const keys = generateKeyPairSync("ed25519");
+    await writeFile(path, keys.privateKey.export({ type: "pkcs8", format: "pem" }).toString(), "utf8");
+    if (options.publicKeyPath !== undefined) {
+      await writeFile(
+        options.publicKeyPath,
+        keys.publicKey.export({ type: "spki", format: "pem" }).toString(),
+        "utf8",
+      );
+    }
+    return keys.privateKey;
+  }
+}
+
 export async function runDemo(options: DemoOptions): Promise<DemoSummary> {
   const log: Logger =
     options.logImpl ?? (options.quiet === true ? () => {} : (line) => process.stdout.write(`${line}\n`));
   if (options.x402 === true) {
     return runX402Act(options, log);
+  }
+  if (options.hold === true) {
+    return runHoldAct(options, log);
   }
   if (options.approvals === true) {
     return runApprovalAct(options, log);
@@ -435,8 +555,18 @@ if (process.argv[1]?.endsWith("demo.ts")) {
     mock: process.argv.includes("--mock"),
     x402: process.argv.includes("--x402"),
     approvals: process.argv.includes("--approvals"),
+    hold: process.argv.includes("--hold"),
+    reset: process.argv.includes("--reset"),
     // Resolved against this file, not the cwd: `npm run demo` starts in the package while a
     // developer may not, and artifacts landing somewhere different each time is its own bug.
+    ...(process.argv.includes("--hold")
+      ? {
+          auditPath: fileURLToPath(new URL("../audit.jsonl", import.meta.url)),
+          approvalsPath: fileURLToPath(new URL("../approvals.json", import.meta.url)),
+          publicKeyPath: fileURLToPath(new URL("../operator.pub.pem", import.meta.url)),
+          privateKeyPath: fileURLToPath(new URL("../operator.key.pem", import.meta.url)),
+        }
+      : {}),
     ...(process.argv.includes("--approvals")
       ? {
           auditPath: fileURLToPath(new URL("../audit.jsonl", import.meta.url)),
@@ -447,6 +577,11 @@ if (process.argv[1]?.endsWith("demo.ts")) {
   });
   if (summary.kind === "x402-act") {
     if (summary.result.status !== "failed" || summary.result.error.code !== "price_mismatch") {
+      process.exitCode = 1;
+    }
+  } else if (summary.kind === "hold-act") {
+    // Blocked and settled are both correct here — they are the two halves of the handoff.
+    if (summary.result.status === "failed") {
       process.exitCode = 1;
     }
   } else if (summary.kind === "approval-act") {

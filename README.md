@@ -119,6 +119,8 @@ await approvals.grant({
 
 Two grants on the same terms are two authorisations, not one reusable one: a human approving twice authorises twice. The file format below is what `grant()` writes, documented because operators back this with their own storage — a database, a queue, an approvals UI — and an `ApprovalStore` is three methods.
 
+`npm run demo -- --hold` is that loop with the human step left to a human. The agent is blocked and the demo exits; you approve with the CLI; you run it again and it settles. Three commands and two processes, which is also the only path here that exercises one process writing an approval store and another reading it.
+
 `@agentveins/cli` is a working example of that routing — a person at a terminal:
 
 ```bash
@@ -194,6 +196,8 @@ depends on it rather than in the one that is actually stale.
 npm run demo -- --mock                            # five acts, no network, no keys
 npm run demo -- --x402                            # the x402 act, printing the HTTP handshake
 npm run demo -- --approvals                       # the approval act: blocked, approved, settled
+npm run demo -- --hold                            # stop at the block; a person approves, then rerun
+npm run demo -- --hold --reset                    # ...starting from nothing
 
 npx @agentveins/cli pending                       # what is waiting on a person
 npx @agentveins/cli approve 1 --ttl 15m           # grant the first row
