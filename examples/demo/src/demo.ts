@@ -1,4 +1,5 @@
 import { generateKeyPairSync } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import type { webcrypto } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { Server } from "node:http";
@@ -17,6 +18,7 @@ import { solanaAdapter } from "@agentveins/adapter-solana";
 import { createKeyPairFromBytes } from "@solana/kit";
 import { loadEnvFile } from "./env.js";
 import { tracingFetch } from "./trace.js";
+import { fileApprovalStore, fileAuditSink } from "@agentveins/core/fs";
 import { mockAdapter } from "./mockAdapter.js";
 import { createVendorApp } from "./vendor.js";
 
@@ -24,6 +26,12 @@ export interface DemoOptions {
   mock?: boolean;
   x402?: boolean;
   approvals?: boolean;
+  /**
+   * Where the approval act keeps its log and store. Left unset the act runs in memory, which is
+   * what the tests want; set, it leaves the artifacts `@agentveins/cli` reads.
+   */
+  auditPath?: string;
+  approvalsPath?: string;
   quiet?: boolean;
   /** Test-only seam: routes the x402 act's vendor call through this instead of a real listener. */
   fetchImpl?: typeof fetch;
@@ -326,10 +334,14 @@ async function runX402Act(options: DemoOptions, log: Logger): Promise<X402ActSum
 // guard blocks it with nothing signed, an operator approves those exact terms, and the identical
 // request settles. The approval is spent on use, so replaying the same request blocks again.
 async function runApprovalAct(options: DemoOptions, log: Logger): Promise<ApprovalActSummary> {
-  const store = memoryApprovalStore([]);
+  const store =
+    options.approvalsPath === undefined
+      ? memoryApprovalStore([])
+      : fileApprovalStore(options.approvalsPath);
   const policy: Policy = { ...buildPolicy("api.weather.com"), approvals: { above: "0.05" } };
   const keys = generateKeyPairSync("ed25519");
-  const audit = memoryAuditSink();
+  const audit =
+    options.auditPath === undefined ? memoryAuditSink() : fileAuditSink(options.auditPath);
   const guard = await createGuard({
     policy,
     adapters: [mockAdapter()],
@@ -365,6 +377,14 @@ async function runApprovalAct(options: DemoOptions, log: Logger): Promise<Approv
   }
   log("  the approval is spent: an identical payment would be blocked again");
 
+  if (options.auditPath !== undefined && options.approvalsPath !== undefined) {
+    log("\n  the operator's side of this is a real log on disk, not a fixture:");
+    log(`      ${options.auditPath}`);
+    log(`      ${options.approvalsPath}`);
+    log("\n  review it the way an operator would:");
+    log(`      npx @agentveins/cli pending --log ${options.auditPath} --approvals ${options.approvalsPath}`);
+  }
+
   return { kind: "approval-act", result: second };
 }
 
@@ -386,6 +406,14 @@ if (process.argv[1]?.endsWith("demo.ts")) {
     mock: process.argv.includes("--mock"),
     x402: process.argv.includes("--x402"),
     approvals: process.argv.includes("--approvals"),
+    // Resolved against this file, not the cwd: `npm run demo` starts in the package while a
+    // developer may not, and artifacts landing somewhere different each time is its own bug.
+    ...(process.argv.includes("--approvals")
+      ? {
+          auditPath: fileURLToPath(new URL("../audit.jsonl", import.meta.url)),
+          approvalsPath: fileURLToPath(new URL("../approvals.json", import.meta.url)),
+        }
+      : {}),
   });
   if (summary.kind === "x402-act") {
     if (summary.result.status !== "failed" || summary.result.error.code !== "price_mismatch") {
