@@ -168,12 +168,20 @@ npm run vendor --workspace=@agentveins/demo       # the 402 vendor alone, on VEN
 ### Settling on devnet
 
 ```
-npm run test:devnet --workspace=@agentveins/demo  # x402 settlement, ~0.01 USDC per run
+npm run test:devnet --workspace=@agentveins/demo            # x402 settlement, ~0.01 USDC
+npm run test:devnet:approvals --workspace=@agentveins/demo  # approval gate over x402, ~0.01 USDC
 ```
 
-Skipped unless `DEVNET_SETTLE=1`, which that script sets for the one run. The flag exists because
-the test spends real money and `prepublishOnly` runs the full suite — publishing must never move
+Skipped unless `DEVNET_SETTLE=1`, which those scripts set for the one run. The flag exists because
+the tests spend real money and `prepublishOnly` runs the full suite — publishing must never move
 funds as a side effect of a configured machine.
+
+The approval run is the one that proves the gate and the rail compose. Every other approval test
+stubs the adapter, so it can only show what the guard returned; this one counts the calls the
+adapter makes and shows what it did. A payment blocked for approval reaches the vendor zero times
+— no quote fetched, nothing signed — and the replay after settlement is refused before the chain
+is touched again, not merely reported as refused. Three payments, one settlement, and the
+recipient's balance moves exactly once.
 
 ### Publishing
 
