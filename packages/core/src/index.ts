@@ -15,7 +15,7 @@ export {
 export { CorruptLogError, applyEntry, emptyState, replay, spentInWindow, windowKey } from "./state.js";
 export { CHECKS, allowlistCheck, budgetCheck, killSwitchCheck } from "./checks/index.js";
 export type {
-  Anchor, AnchorStore, Approval, ApprovalKey, ApprovalPolicy, ApprovalStore, AuditEntry, AuditKind, AuditOutcome, AuditSink, Budget, BudgetPeriod,
+  Anchor, AnchorStore, Approval, ApprovalGrant, ApprovalKey, ApprovalPolicy, ApprovalStore, AuditEntry, AuditKind, AuditOutcome, AuditSink, Budget, BudgetPeriod,
   Check, Currency, KillSwitch, PayRequest, PayResult, PaymentContext, PaymentError,
   PaymentErrorCode, Policy, SettlementReceipt, SettlementRequest, SpendState,
   UnsignedAuditEntry, VendorPolicy, Violation, ViolationCode, WalletAdapter, WindowState,

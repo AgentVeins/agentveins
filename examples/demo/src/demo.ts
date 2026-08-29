@@ -353,15 +353,12 @@ async function runApprovalAct(options: DemoOptions, log: Logger): Promise<Approv
   }
 
   log("\n  operator approves 0.10 USDC to api.weather.com, once");
-  store.approvals.push({
+  await store.grant({
     agent: "weather-agent",
     vendorNormalized: "api.weather.com",
     amountMinor: 100_000n,
-    id: "apr_demo",
     expiresAt: new Date(Date.now() + 300_000).toISOString(),
-    usedAt: null,
   });
-
   const second = await guard.pay(request);
   if (second.status === "settled") {
     log(`  ✓ payment settled  tx=${second.txSig}`);

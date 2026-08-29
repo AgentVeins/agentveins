@@ -37,7 +37,18 @@ export interface Approval extends ApprovalKey {
   usedAt: string | null;
 }
 
+/** The terms a human is authorising, plus how long the authorisation stands. */
+export interface ApprovalGrant extends ApprovalKey {
+  /** ISO 8601. After this the approval is refused and the human is asked again. */
+  expiresAt: string;
+}
+
 export interface ApprovalStore {
+  /**
+   * Records a human's decision. The store assigns the id and leaves the approval unspent, so
+   * two grants on the same terms are two separate authorisations rather than one reusable one.
+   */
+  grant(input: ApprovalGrant): Promise<Approval>;
   /** Matches on the key alone. Expiry and prior use are the guard's to judge. */
   find(key: ApprovalKey): Promise<Approval | null>;
   /** Atomic. Throws if this approval was already consumed. */

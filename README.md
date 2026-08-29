@@ -104,6 +104,23 @@ If the store cannot be read, or the approval cannot be claimed — a peer proces
 ]
 ```
 
+Write approvals with `grant()` rather than by hand — it assigns the id, leaves the record unspent, and rejects a grant nobody could ever use while a person is still there to correct it:
+
+```typescript
+import { normalizeVendor } from "@agentveins/core";
+
+await approvals.grant({
+  agent: "research-agent",
+  vendorNormalized: normalizeVendor("https://api.weather.com/forecast"), // "api.weather.com"
+  amountMinor: 7_500_000n,                                              // exactly 7.50 USDC
+  expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
+});
+```
+
+Two grants on the same terms are two authorisations, not one reusable one: a human approving twice authorises twice. The file format below is what `grant()` writes, documented because operators back this with their own storage — a database, a queue, an approvals UI — and an `ApprovalStore` is three methods.
+
+AgentVeins does not ask anyone for approval. It records the decision and enforces it; routing the request to a person is yours, because who approves what belongs to your organisation and not to this SDK. Everything needed is already in the denial: `pay()` returns `blocked` with `approval_required`, and the same attempt lands in the audit log with the agent, vendor, amount and reason — so the log doubles as the queue of what is waiting, and each entry's `auditId` identifies the request.
+
 `amountMinor` is a **decimal string of USDC minor units** (`"7500000"` is 7.50), never a JSON number — a number cannot carry a u64 exactly. `agent` must match the guard's `agent`, and `vendorNormalized` must match what `normalizeVendor()` returns for the vendor URL. `expiresAt` is ISO 8601. `usedAt` must be present and explicitly `null` while unspent; the store stamps it with an ISO timestamp when the guard spends it. A record missing a field or carrying the wrong type throws a `SyntaxError` naming the file and the record — a malformed approval is never read as a quiet denial.
 
 `freeze()` means it: it closes the kill switch in memory before it returns, so every later `pay` is already blocked even while a payment is still waiting on a slow rail. Only its audit entry is queued behind that payment, which is what `flush()` waits for. Call it before exiting a process that just froze. Payments themselves stay strictly serialized, so two concurrent calls can never race the same budget. `unfreeze()` is queued in full: the switch may snap shut out of turn, never open out of turn.
