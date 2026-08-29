@@ -50,6 +50,54 @@ function contract(name: string, make: (seed: Approval[]) => Promise<ApprovalStor
       await expect(store.consume("apr_1")).rejects.toThrow();
     });
 
+    it("grants an approval a later find can see", async () => {
+      const store = await make([]);
+      const granted = await store.grant({ ...key, expiresAt: "2099-01-01T00:00:00.000Z" });
+
+      expect(granted.id).not.toBe("");
+      expect(granted.usedAt).toBeNull();
+      expect((await store.find(key))?.id).toBe(granted.id);
+    });
+
+    it("grants an approval the guard can then spend exactly once", async () => {
+      const store = await make([]);
+      const granted = await store.grant({ ...key, expiresAt: "2099-01-01T00:00:00.000Z" });
+
+      await store.consume(granted.id);
+
+      expect((await store.find(key))?.usedAt).not.toBeNull();
+      await expect(store.consume(granted.id)).rejects.toThrow();
+    });
+
+    it("gives each grant its own id, so two humans approving twice authorise twice", async () => {
+      const store = await make([]);
+      const first = await store.grant({ ...key, expiresAt: "2099-01-01T00:00:00.000Z" });
+      const second = await store.grant({ ...key, expiresAt: "2099-01-01T00:00:00.000Z" });
+
+      expect(second.id).not.toBe(first.id);
+      await store.consume(first.id);
+      await expect(store.consume(second.id)).resolves.toBeUndefined();
+    });
+
+    it("refuses a grant whose expiry is not a date", async () => {
+      const store = await make([]);
+      await expect(store.grant({ ...key, expiresAt: "whenever" })).rejects.toThrow();
+    });
+
+    it("refuses a grant for a non-positive amount", async () => {
+      const store = await make([]);
+      await expect(
+        store.grant({ ...key, amountMinor: 0n, expiresAt: "2099-01-01T00:00:00.000Z" }),
+      ).rejects.toThrow();
+    });
+
+    it("refuses a grant with no agent named", async () => {
+      const store = await make([]);
+      await expect(
+        store.grant({ ...key, agent: "  ", expiresAt: "2099-01-01T00:00:00.000Z" }),
+      ).rejects.toThrow();
+    });
+
     it("refuses to consume an approval it does not have", async () => {
       const store = await make([]);
       await expect(store.consume("apr_missing")).rejects.toThrow();

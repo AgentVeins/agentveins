@@ -1,6 +1,7 @@
 import { readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import type { Approval, ApprovalKey, ApprovalStore } from "../types.js";
+import { assertGrantable } from "./grant.js";
+import type { Approval, ApprovalGrant, ApprovalKey, ApprovalStore } from "../types.js";
 
 interface StoredApproval extends Omit<Approval, "amountMinor"> {
   amountMinor: string;
@@ -82,7 +83,40 @@ export function fileApprovalStore(path: string): ApprovalStore {
   // unspent approval and both spend it. Chaining them makes the second read the first's result.
   let queue: Promise<void> = Promise.resolve();
 
+  // Every mutation shares the queue, not just consume: granting is read-modify-write on the same
+  // file, so a grant racing a consume would otherwise read the file before the other's write and
+  // drop it — losing either a human's decision or the record that one was spent.
+  function mutate<T>(operation: () => Promise<T>): Promise<T> {
+    const scheduled = queue.then(operation, operation);
+    queue = scheduled.then(
+      () => undefined,
+      () => undefined,
+    );
+    return scheduled;
+  }
+
   return {
+    // `async` so a rejected grant is a rejected promise, never a synchronous throw: a method
+    // typed Promise<Approval> that throws before returning one would slip past every caller
+    // that handles failure with .catch().
+    async grant(input: ApprovalGrant): Promise<Approval> {
+      assertGrantable(input);
+      return mutate(async () => {
+        const approvals = await readAll();
+        const approval: Approval = {
+          agent: input.agent,
+          vendorNormalized: input.vendorNormalized,
+          amountMinor: input.amountMinor,
+          id: randomUUID(),
+          expiresAt: input.expiresAt,
+          usedAt: null,
+        };
+        approvals.push(approval);
+        await writeAll(approvals);
+        return { ...approval };
+      });
+    },
+
     async find(key: ApprovalKey): Promise<Approval | null> {
       const approvals = await readAll();
       return (
@@ -96,7 +130,7 @@ export function fileApprovalStore(path: string): ApprovalStore {
     },
 
     consume(id: string): Promise<void> {
-      const scheduled = queue.then(async () => {
+      return mutate(async () => {
         const approvals = await readAll();
         const approval = approvals.find((candidate) => candidate.id === id);
         if (approval === undefined) {
@@ -108,11 +142,6 @@ export function fileApprovalStore(path: string): ApprovalStore {
         approval.usedAt = new Date().toISOString();
         await writeAll(approvals);
       });
-      queue = scheduled.then(
-        () => undefined,
-        () => undefined,
-      );
-      return scheduled;
     },
   };
 }
