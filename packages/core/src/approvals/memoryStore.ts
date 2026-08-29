@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { assertGrantable } from "./grant.js";
+import { matchesKey, selectApproval } from "./select.js";
 import type { Approval, ApprovalGrant, ApprovalKey, ApprovalStore } from "../types.js";
 
 export interface MemoryApprovalStore extends ApprovalStore {
@@ -26,14 +27,7 @@ export function memoryApprovalStore(seed: Approval[] = []): MemoryApprovalStore 
       return { ...approval };
     },
     async find(key: ApprovalKey): Promise<Approval | null> {
-      return (
-        approvals.find(
-          (candidate) =>
-            candidate.agent === key.agent &&
-            candidate.vendorNormalized === key.vendorNormalized &&
-            candidate.amountMinor === key.amountMinor,
-        ) ?? null
-      );
+      return selectApproval(approvals.filter((candidate) => matchesKey(candidate, key)));
     },
     async consume(id: string): Promise<void> {
       const approval = approvals.find((candidate) => candidate.id === id);

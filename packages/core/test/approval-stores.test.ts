@@ -79,6 +79,25 @@ function contract(name: string, make: (seed: Approval[]) => Promise<ApprovalStor
       await expect(store.consume(second.id)).resolves.toBeUndefined();
     });
 
+    it("hands the guard a fresh approval rather than a spent one for the same terms", async () => {
+      const store = await make([]);
+      const first = await store.grant({ ...key, expiresAt: "2099-01-01T00:00:00.000Z" });
+      await store.consume(first.id);
+      const second = await store.grant({ ...key, expiresAt: "2099-01-01T00:00:00.000Z" });
+
+      // Returning the spent record would shadow every later grant: the guard would report the
+      // approval used forever while a person kept approving into a void.
+      expect((await store.find(key))?.id).toBe(second.id);
+    });
+
+    it("still reports a spent approval when every match is spent, so the guard can say why", async () => {
+      const store = await make([]);
+      const only = await store.grant({ ...key, expiresAt: "2099-01-01T00:00:00.000Z" });
+      await store.consume(only.id);
+
+      expect((await store.find(key))?.usedAt).not.toBeNull();
+    });
+
     it("refuses a grant whose expiry is not a date", async () => {
       const store = await make([]);
       await expect(store.grant({ ...key, expiresAt: "whenever" })).rejects.toThrow();

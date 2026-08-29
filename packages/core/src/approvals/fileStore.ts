@@ -1,6 +1,7 @@
 import { readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { assertGrantable } from "./grant.js";
+import { matchesKey, selectApproval } from "./select.js";
 import type { Approval, ApprovalGrant, ApprovalKey, ApprovalStore } from "../types.js";
 
 interface StoredApproval extends Omit<Approval, "amountMinor"> {
@@ -119,14 +120,7 @@ export function fileApprovalStore(path: string): ApprovalStore {
 
     async find(key: ApprovalKey): Promise<Approval | null> {
       const approvals = await readAll();
-      return (
-        approvals.find(
-          (candidate) =>
-            candidate.agent === key.agent &&
-            candidate.vendorNormalized === key.vendorNormalized &&
-            candidate.amountMinor === key.amountMinor,
-        ) ?? null
-      );
+      return selectApproval(approvals.filter((candidate) => matchesKey(candidate, key)));
     },
 
     consume(id: string): Promise<void> {
