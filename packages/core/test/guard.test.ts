@@ -1034,6 +1034,24 @@ describe("guard.freeze closes before it is written", () => {
   });
 });
 
+/**
+ * A store for the tests that never grant, so adding a method to ApprovalStore does not mean
+ * editing every literal in this file. It meant exactly that once: `npm test` stayed green
+ * because vitest transpiles without type-checking, and only `tsc` noticed.
+ */
+function stubApprovalStore(overrides: Partial<ApprovalStore>): ApprovalStore {
+  return {
+    async grant() {
+      throw new Error("this stub does not grant");
+    },
+    async find() {
+      return null;
+    },
+    async consume() {},
+    ...overrides,
+  };
+}
+
 describe("approval gate", () => {
   const approvalPolicy = { ...policy(), approvals: { above: "0.05" } };
 
@@ -1103,13 +1121,13 @@ describe("approval gate", () => {
   it("consumes the approval before the rail is called", async () => {
     const order: string[] = [];
     const store = memoryApprovalStore([pendingApproval()]);
-    const wrapped = {
+    const wrapped = stubApprovalStore({
       find: store.find.bind(store),
       consume: async (id: string) => {
         order.push("consume");
         await store.consume(id);
       },
-    };
+    });
     const adapter = stubAdapter(async () => {
       order.push("execute");
       return { txSig: "sig", rail: "solana" };
@@ -1133,12 +1151,12 @@ describe("approval gate", () => {
   });
 
   it("blocks with approval_unavailable when the store cannot be read", async () => {
-    const broken = {
+    const broken = stubApprovalStore({
       find: async () => {
         throw new Error("store down");
       },
       consume: async () => undefined,
-    };
+    });
     const guard = await makeGuard({ policy: approvalPolicy, approvals: broken });
     const result = await guard.pay({ to: "https://api.weather.com/f", amount: "0.10", currency: "USDC", reason: "r" });
 
@@ -1148,12 +1166,12 @@ describe("approval gate", () => {
   });
 
   it("keeps paying below the threshold while the store is down", async () => {
-    const broken = {
+    const broken = stubApprovalStore({
       find: async () => {
         throw new Error("store down");
       },
       consume: async () => undefined,
-    };
+    });
     const guard = await makeGuard({ policy: approvalPolicy, approvals: broken });
 
     expect((await guard.pay({ to: "https://api.weather.com/f", amount: "0.01", currency: "USDC", reason: "r" })).status).toBe("settled");
@@ -1162,12 +1180,12 @@ describe("approval gate", () => {
   it("blocks with approval_unavailable when the approval cannot be claimed", async () => {
     const store = memoryApprovalStore([pendingApproval()]);
     const adapter = fakeAdapter();
-    const wrapped: ApprovalStore = {
+    const wrapped = stubApprovalStore({
       find: store.find.bind(store),
       consume: async () => {
         throw new Error("store down");
       },
-    };
+    });
     const guard = await makeGuard({ policy: approvalPolicy, approvals: wrapped, adapters: [adapter] });
 
     const result = await guard.pay({ to: "https://api.weather.com/f", amount: "0.10", currency: "USDC", reason: "r" });
@@ -1182,12 +1200,12 @@ describe("approval gate", () => {
 
   it("keeps paying below the threshold after a claim failed, so nothing latches", async () => {
     const store = memoryApprovalStore([pendingApproval()]);
-    const wrapped: ApprovalStore = {
+    const wrapped = stubApprovalStore({
       find: store.find.bind(store),
       consume: async () => {
         throw new Error("store down");
       },
-    };
+    });
     const guard = await makeGuard({ policy: approvalPolicy, approvals: wrapped });
 
     await guard.pay({ to: "https://api.weather.com/f", amount: "0.10", currency: "USDC", reason: "r" });
@@ -1199,14 +1217,14 @@ describe("approval gate", () => {
     const store = memoryApprovalStore([pendingApproval()]);
     const adapter = fakeAdapter();
     let guard: Guard;
-    const wrapped: ApprovalStore = {
+    const wrapped = stubApprovalStore({
       find: async (key) => {
         const found = await store.find(key);
         await guard.freeze();
         return found;
       },
       consume: store.consume.bind(store),
-    };
+    });
     guard = await makeGuard({ policy: approvalPolicy, approvals: wrapped, adapters: [adapter] });
 
     const result = await guard.pay({ to: "https://api.weather.com/f", amount: "0.10", currency: "USDC", reason: "r" });
