@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "agentveins": {
+      "command": "npx",
+      "args": ["-y", "@agentveins/mcp"],
+      "env": {
+        "AGENTVEINS_POLICY": "${AGENTVEINS_POLICY}",
+        "AGENTVEINS_RAIL": "${AGENTVEINS_RAIL:-mock}"
+      }
+    }
+  }
+}
