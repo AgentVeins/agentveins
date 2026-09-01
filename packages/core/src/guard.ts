@@ -10,7 +10,8 @@ import { sanitizePaymentError, sanitizeSignature, sanitizeViolation } from "./sa
 import { applyEntry, emptyState, replay } from "./state.js";
 import type {
   Anchor, AnchorStore, ApprovalStore, AuditEntry, AuditOutcome, AuditSink, PayRequest, PayResult,
-  PaymentError, Policy, SpendState, UnsignedAuditEntry, Violation, WalletAdapter, WindowState,
+  PaymentContext, PaymentError, Policy, SpendState, UnsignedAuditEntry, Violation, WalletAdapter,
+  WindowState,
 } from "./types.js";
 import { normalizeVendor } from "./vendor.js";
 
@@ -60,6 +61,21 @@ interface WriteInput {
 interface WriteOutcome {
   id: string;
   recorded: boolean;
+}
+
+type Prepared =
+  | { ok: false; violation: Violation }
+  | {
+      ok: true;
+      amountMinor: bigint;
+      vendorNormalized: string;
+      adapter: WalletAdapter;
+      ctx: PaymentContext;
+    };
+
+interface Evaluated {
+  violation: Violation | null;
+  approvalThreshold: bigint | null;
 }
 
 const AUDIT_UNAVAILABLE_MESSAGE =
@@ -284,6 +300,66 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
     return value instanceof Date ? value : new Date(Number.NaN);
   }
 
+  // Request validation, lifted out of runPayment so `check` runs exactly the same admission
+  // rules as `pay` rather than a second implementation of them.
+  function prepare(req: PayRequest, ts: Date): Prepared {
+    try {
+      if (Number.isNaN(ts.getTime())) {
+        throw new RangeError("the clock returned an invalid Date");
+      }
+      if (req.currency !== "USDC") {
+        throw new InvalidRequestError("unsupported currency", { currency: String(req.currency) });
+      }
+      if (typeof req.reason !== "string") {
+        throw new TypeError("reason must be a string");
+      }
+      const amountMinor = parseAmount(req.amount);
+      if (amountMinor <= 0n) {
+        throw new InvalidRequestError("amount must be greater than zero", { amount: req.amount });
+      }
+      const vendorNormalized = normalizeVendor(req.to);
+      const adapter = pickAdapter(req.via);
+      return {
+        ok: true,
+        amountMinor,
+        vendorNormalized,
+        adapter,
+        ctx: {
+          vendor: req.to,
+          vendorNormalized,
+          amountMinor,
+          currency: req.currency,
+          reason: req.reason,
+          now: ts,
+        },
+      };
+    } catch (error) {
+      return { ok: false, violation: invalidRequest(error) };
+    }
+  }
+
+  function evaluateChecks(ctx: PaymentContext): Evaluated {
+    let violation: Violation | null = null;
+    let approvalThreshold: bigint | null = null;
+    try {
+      for (const check of CHECKS) {
+        violation = check(ctx, policy, state);
+        if (violation !== null) {
+          break;
+        }
+      }
+      if (violation === null && policy.approvals !== undefined) {
+        approvalThreshold = parseAmount(policy.approvals.above);
+      }
+    } catch (error) {
+      violation = {
+        code: "invalid_request",
+        message: `the policy could not be evaluated: ${messageOf(error)}`,
+      };
+    }
+    return { violation, approvalThreshold };
+  }
+
   async function runPayment(req: PayRequest): Promise<PayResult> {
     if (auditBroken) {
       // No audit id: the attempt could not be recorded, which is exactly why it was blocked.
@@ -300,27 +376,9 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
     const auditTs = Number.isNaN(ts.getTime()) ? new Date() : ts;
     const fields = (typeof req === "object" && req !== null ? req : {}) as Partial<PayRequest>;
 
-    let amountMinor: bigint;
-    let vendorNormalized: string;
-    let adapter: WalletAdapter;
-    try {
-      if (Number.isNaN(ts.getTime())) {
-        throw new RangeError("the clock returned an invalid Date");
-      }
-      if (req.currency !== "USDC") {
-        throw new InvalidRequestError("unsupported currency", { currency: String(req.currency) });
-      }
-      if (typeof req.reason !== "string") {
-        throw new TypeError("reason must be a string");
-      }
-      amountMinor = parseAmount(req.amount);
-      if (amountMinor <= 0n) {
-        throw new InvalidRequestError("amount must be greater than zero", { amount: req.amount });
-      }
-      vendorNormalized = normalizeVendor(req.to);
-      adapter = pickAdapter(req.via);
-    } catch (error) {
-      const violation = invalidRequest(error);
+    const prepared = prepare(req, ts);
+    if (!prepared.ok) {
+      const violation = prepared.violation;
       const outcome = await write({
         kind: "payment",
         vendor: typeof fields.to === "string" ? fields.to : "",
@@ -337,34 +395,9 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
       });
       return { status: "blocked", violation, auditId: outcome.id };
     }
+    const { amountMinor, vendorNormalized, adapter, ctx } = prepared;
 
-    const ctx = {
-      vendor: req.to,
-      vendorNormalized,
-      amountMinor,
-      currency: req.currency,
-      reason: req.reason,
-      now: ts,
-    };
-
-    // A check that throws is a policy problem, not an exception the agent should catch:
-    // payment-time failures return violations. The approval threshold is parsed inside the same
-    // guarded read, so a malformed policy blocks rather than throwing out of `pay`.
-    let violation: Violation | null = null;
-    let approvalThreshold: bigint | null = null;
-    try {
-      for (const check of CHECKS) {
-        violation = check(ctx, policy, state);
-        if (violation !== null) {
-          break;
-        }
-      }
-      if (violation === null && policy.approvals !== undefined) {
-        approvalThreshold = parseAmount(policy.approvals.above);
-      }
-    } catch (error) {
-      violation = { code: "invalid_request", message: `the policy could not be evaluated: ${messageOf(error)}` };
-    }
+    const { violation, approvalThreshold } = evaluateChecks(ctx);
 
     // Every refusal crosses this one boundary, so a check that puts an untrusted vendor in
     // `detail` and the guard's own request errors are bounded and de-escaped identically.
