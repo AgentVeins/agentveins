@@ -1358,4 +1358,43 @@ describe("check", () => {
     if (result.status !== "blocked") throw new Error("expected blocked");
     expect(result.violation.code).toBe("kill_switch");
   });
+
+  it("blocks when a freeze lands while the store is being read", async () => {
+    const store = memoryApprovalStore([]);
+    let guard: Guard;
+    const racing: ApprovalStore = {
+      grant: store.grant.bind(store),
+      consume: store.consume.bind(store),
+      find: async (key) => {
+        await guard.freeze();
+        return store.find(key);
+      },
+    };
+    guard = await makeGuard({ policy: approvalPolicy, approvals: racing });
+
+    const result = await guard.check({ to: "https://api.weather.com/f", amount: "0.10", currency: "USDC", reason: "r" });
+
+    expect(result.status).toBe("blocked");
+    if (result.status !== "blocked") throw new Error("expected blocked");
+    expect(result.violation.code).toBe("kill_switch");
+  });
+
+  it("refuses a granted approval carrying no id, as pay does", async () => {
+    const store = memoryApprovalStore([]);
+    const granted = await store.grant({
+      agent: "demo-agent",
+      vendorNormalized: "api.weather.com",
+      amountMinor: 100_000n,
+      expiresAt: "2999-01-01T00:00:00.000Z",
+    });
+    const broken: ApprovalStore = {
+      grant: store.grant.bind(store),
+      consume: store.consume.bind(store),
+      find: async () => ({ ...granted, id: "" }),
+    };
+    const guard = await makeGuard({ policy: approvalPolicy, approvals: broken });
+
+    const result = await guard.check({ to: "https://api.weather.com/f", amount: "0.10", currency: "USDC", reason: "r" });
+    expect(result.status).toBe("blocked");
+  });
 });

@@ -346,7 +346,7 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
 
   // A check that throws is a policy problem, not an exception the agent should catch:
   // payment-time failures return violations. The approval threshold is parsed inside the same
-  // guarded read, so a malformed policy blocks rather than throwing out of `pay`.
+  // guarded read, so a malformed policy blocks rather than throwing out of `pay` or `check`.
   function evaluateChecks(ctx: PaymentContext): Evaluated {
     let violation: Violation | null = null;
     let approvalThreshold: bigint | null = null;
@@ -390,7 +390,7 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
     if (approvalThreshold === null || prepared.amountMinor <= approvalThreshold) {
       return { status: "allowed" };
     }
-    if (approvalStore === undefined) {
+    if (approvalStore === undefined || policy.approvals === undefined) {
       return {
         status: "blocked",
         violation: sanitizeViolation({
@@ -418,13 +418,28 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
       };
     }
 
+    // The store lookup above is the only await in this branch, so the switch is re-read here:
+    // a freeze landing while it was in flight must still block, matching what `pay` does after
+    // its own awaits.
+    const frozen = killSwitchCheck(prepared.ctx, policy, state);
+    if (frozen !== null) {
+      return { status: "blocked", violation: sanitizeViolation(frozen) };
+    }
+
     // find, never consume: a dry run must not cost a person's decision.
-    if (decideApproval(found, key, prepared.ctx.now) !== "grant") {
+    const decision = decideApproval(found, key, prepared.ctx.now);
+    // A grant with no id has nothing to spend, so it is not honoured, matching `pay`.
+    if (decision !== "grant" || found === null || found.id === "") {
       return {
         status: "blocked",
         violation: sanitizeViolation({
           code: "approval_required",
           message: "this payment is above the approval threshold and needs a human approval",
+          detail: {
+            threshold: policy.approvals.above,
+            attempted: formatAmount(prepared.amountMinor),
+            reason: decision === "grant" ? "missing" : decision,
+          },
         }),
       };
     }
