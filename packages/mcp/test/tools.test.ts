@@ -93,12 +93,47 @@ describe("tools", () => {
 
   it("labels every result on the mock rail", async () => {
     const defs = toolDefinitions(await guardWith(), "mock");
-    expect((await tool(defs, "pay").handler(request)).content[0]?.text).toMatch(/mock/i);
+    expect((await tool(defs, "pay").handler(request)).content[0]?.text).toMatch(/mock rail/i);
+    expect((await tool(defs, "check").handler(request)).content[0]?.text).toMatch(/mock rail/i);
+    expect((await tool(defs, "spend_state").handler({})).content[0]?.text).toMatch(/mock rail/i);
   });
 
   it("does not label results on a real rail", async () => {
     const defs = toolDefinitions(await guardWith(), "solana");
     expect((await tool(defs, "pay").handler(request)).content[0]?.text ?? "").not.toMatch(/no money moved/i);
+    expect((await tool(defs, "check").handler(request)).content[0]?.text ?? "").not.toMatch(/no money moved/i);
+    expect((await tool(defs, "spend_state").handler({})).content[0]?.text ?? "").not.toMatch(/no money moved/i);
+  });
+
+  // Every closing line but this one tells the agent to stop. Telling a frozen agent to try a
+  // cheaper vendor sends it down the allowlist one refusal at a time.
+  it("tells a frozen agent to stop rather than to retry somewhere cheaper", async () => {
+    const guard = await guardWith();
+    await guard.freeze();
+    const result = await tool(toolDefinitions(guard, "mock"), "pay").handler(request);
+
+    expect(result.isError).toBeUndefined();
+    const body = result.content[0]?.text ?? "";
+    expect(body).toContain("kill_switch");
+    expect(body).toMatch(/stop trying to pay/i);
+    expect(body).not.toMatch(/cheaper vendor|smaller amount/i);
+  });
+
+  it("tells an agent facing a latched guard to stop, and does not print an empty audit id", async () => {
+    const guard = await guardWith({
+      audit: { async append() { throw new Error("disk full"); } },
+    });
+    // The first payment latches the guard; the second is the one refused with no audit id.
+    await tool(toolDefinitions(guard, "mock"), "pay").handler(request);
+    const result = await tool(toolDefinitions(guard, "mock"), "pay").handler(request);
+
+    expect(result.isError).toBeUndefined();
+    const body = result.content[0]?.text ?? "";
+    expect(body).toContain("audit_unavailable");
+    expect(body).toMatch(/stop trying to pay/i);
+    expect(body).not.toMatch(/cheaper vendor|smaller amount/i);
+    expect(body).not.toMatch(/^audit\s*$/m);
+    expect(body).toContain("could not be recorded");
   });
 
   it("checks without paying", async () => {
@@ -128,7 +163,7 @@ describe("tools", () => {
 
     expect(state.frozen).toBe(false);
     const daily = state.budgets.find((b) => b.period === "daily");
-    expect(daily).toEqual({ period: "daily", limit: "2.00", spent: "0.100000", remaining: "1.900000" });
+    expect(daily).toEqual({ period: "daily", limit: "2.000000", spent: "0.100000", remaining: "1.900000" });
   });
 
   it("reports a frozen guard", async () => {
