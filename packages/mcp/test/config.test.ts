@@ -1,5 +1,5 @@
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -85,5 +85,17 @@ describe("buildGuard", () => {
     const result = await guard.pay({ to: "https://evil.example/f", amount: "0.10", currency: "USDC", reason: "r" });
 
     expect(result.status).toBe("blocked");
+  });
+
+  it("records the mock rail on a refusal, not the rail it is standing in for", async () => {
+    const env = await workspace();
+    const { guard } = await buildGuard(env);
+    await guard.pay({ to: "https://evil.example/f", amount: "0.10", currency: "USDC", reason: "r" });
+    await guard.flush();
+
+    const log = await readFile(env["AGENTVEINS_AUDIT"] ?? "", "utf8");
+    const entry = JSON.parse(log.trim().split("\n")[0] ?? "{}") as { outcome: string; rail: string };
+    expect(entry.outcome).toBe("blocked");
+    expect(entry.rail).toBe("mock");
   });
 });

@@ -29,7 +29,7 @@ function required(env: NodeJS.ProcessEnv, name: string, why: string): string {
 function mockAdapter(): WalletAdapter {
   let counter = 0;
   return {
-    name: "solana",
+    name: "mock",
     currency: "USDC",
     async execute(req): Promise<SettlementReceipt> {
       counter += 1;
