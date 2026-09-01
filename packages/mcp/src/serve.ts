@@ -11,10 +11,7 @@ export const SERVER_VERSION = "0.4.0";
 export function buildServer(guard: Guard, rail: Rail): McpServer {
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
   for (const definition of toolDefinitions(guard, rail)) {
-    // The SDK's own .d.ts resolves "zod" from the workspace's hoisted zod 3.x, while this
-    // package depends on zod 4.x; the SDK's zod-compat layer duck-types either at runtime
-    // (it checks for the `_zod` marker), so this is a type-only mismatch, not a real one.
-    server.registerTool(definition.name, definition.config as never, definition.handler as never);
+    server.registerTool(definition.name, definition.config, definition.handler as never);
   }
   return server;
 }

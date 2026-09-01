@@ -19,7 +19,7 @@
     "@agentveins/core": "^0.4.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@solana/kit": "^7.0.0",
-    "zod": "^4.5.4"
+    "zod": "^3.25 || ^4.0"
   },
   "scripts": {
     "build": "tsc --build",
