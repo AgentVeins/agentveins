@@ -1,10 +1,12 @@
-import { createPrivateKey } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { createPrivateKey, generateKeyPairSync } from "node:crypto";
+import { readFile, writeFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import process from "node:process";
 import { createGuard } from "@agentveins/core";
 import { fileAnchorStore, fileApprovalStore, fileAuditSink } from "@agentveins/core/fs";
 import { solanaAdapter } from "@agentveins/adapter-solana";
 import { createKeyPairFromBytes } from "@solana/kit";
+import type { KeyObject } from "node:crypto";
 import type { Guard, Policy, SettlementReceipt, WalletAdapter } from "@agentveins/core";
 import type { Rail } from "./rail.js";
 
@@ -25,6 +27,10 @@ function required(env: NodeJS.ProcessEnv, name: string, why: string): string {
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isMissing(error: unknown): boolean {
+  return (error as { code?: string }).code === "ENOENT";
 }
 
 /**
@@ -48,6 +54,56 @@ async function readPolicy(path: string): Promise<Policy> {
     throw new Error(`AGENTVEINS_POLICY points at ${path}, which is not a JSON object describing a policy`);
   }
   return parsed as Policy;
+}
+
+/**
+ * Loads the signing key, creating it beside the policy on a first run.
+ *
+ * A guard replays its audit log at startup and refuses one it cannot verify, so a key that
+ * changes between launches makes the log unreadable after the first one — and an MCP client
+ * restarts its servers constantly. What that argument requires is a key that *persists*, not
+ * one the operator has to produce by hand, so this writes one once and reads it thereafter.
+ *
+ * A key file that exists but cannot be read is an error, never a reason to write a new one:
+ * replacing it would orphan every entry the old key signed.
+ */
+async function loadOrCreateSigningKey(path: string): Promise<KeyObject> {
+  let source: string | null = null;
+  try {
+    source = await readFile(path, "utf8");
+  } catch (error) {
+    if (!isMissing(error)) {
+      throw new Error(`the signing key at ${path} cannot be read: ${message(error)}`);
+    }
+  }
+
+  if (source !== null) {
+    try {
+      return createPrivateKey(source);
+    } catch (error) {
+      throw new Error(
+        `the signing key at ${path} is not a readable private key: ${message(error)} — move it aside rather than deleting it, since the existing audit log was signed with it`,
+      );
+    }
+  }
+
+  const keys = generateKeyPairSync("ed25519");
+  // 0o600: it signs the audit log, so anything that can read it can forge an entry.
+  await writeFile(path, keys.privateKey.export({ type: "pkcs8", format: "pem" }).toString(), {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  // Written beside the private half so `veins --verify` has something to check the log against,
+  // named the way the rest of this project already names the pair: operator.key.pem next to
+  // operator.pub.pem, rather than a doubled suffix.
+  const publicPath = path.endsWith(".key.pem")
+    ? `${path.slice(0, -".key.pem".length)}.pub.pem`
+    : `${path}.pub.pem`;
+  await writeFile(publicPath, keys.publicKey.export({ type: "spki", format: "pem" }).toString(), "utf8");
+  process.stderr.write(
+    `agentveins-mcp: created a signing key at ${path} — keep it, the audit log cannot be verified without it\n`,
+  );
+  return keys.privateKey;
 }
 
 /**
@@ -80,56 +136,58 @@ async function buildAdapter(env: NodeJS.ProcessEnv, rail: Rail): Promise<WalletA
   return solanaAdapter({ keypair: await createKeyPairFromBytes(secret), rpcUrl, mode });
 }
 
-export async function buildGuard(env: NodeJS.ProcessEnv): Promise<BuiltGuard> {
-  const rail = required(
-    env,
-    "AGENTVEINS_RAIL",
-    'set it to "solana", or to "mock" to govern payments that never move money',
-  );
-  if (rail !== "solana" && rail !== "mock") {
-    throw new Error(`AGENTVEINS_RAIL must be "solana" or "mock", received ${JSON.stringify(rail)}`);
+/**
+ * A configured rail wins; a Solana keypair implies the Solana rail; otherwise the operator says.
+ *
+ * The inference only ever runs toward the real rail. Defaulting to `mock` would hand someone a
+ * server that reports settlements while moving nothing, which is the one guess this must not make.
+ */
+function resolveRail(env: NodeJS.ProcessEnv): Rail {
+  const configured = env["AGENTVEINS_RAIL"];
+  if (configured === undefined || configured.trim() === "") {
+    if (env["SOLANA_KEYPAIR_PATH"] !== undefined) {
+      return "solana";
+    }
+    throw new Error(
+      'AGENTVEINS_RAIL is not set: set it to "solana" and give SOLANA_KEYPAIR_PATH, or to "mock" to govern payments that never move money',
+    );
   }
+  if (configured !== "solana" && configured !== "mock") {
+    throw new Error(`AGENTVEINS_RAIL must be "solana" or "mock", received ${JSON.stringify(configured)}`);
+  }
+  return configured;
+}
 
+export async function buildGuard(env: NodeJS.ProcessEnv): Promise<BuiltGuard> {
+  const rail = resolveRail(env);
   const policyPath = required(env, "AGENTVEINS_POLICY", "the guard needs a policy to enforce");
   const policy = await readPolicy(policyPath);
 
-  // A guard replays its audit log at startup and refuses one it cannot verify, so a key
-  // generated per launch would work exactly once. An MCP client restarts its servers often.
-  const keyPath = required(
-    env,
-    "AGENTVEINS_SIGNING_KEY",
-    "the audit log is signed, and a key that changes between runs makes the log unverifiable",
-  );
-  const signingKey = createPrivateKey(await readFile(keyPath, "utf8"));
+  // Everything else lives beside the policy unless it is named. The alternative default is the
+  // process's working directory, which an MCP client picks and the operator never sees — and a
+  // missing audit log reads as a first run, so a wandering path hands back the whole daily
+  // budget on every launch from somewhere new. The policy file is a location someone chose.
+  const home = dirname(resolve(policyPath));
+  const beside = (name: string): string => resolve(home, name);
 
-  // An MCP client launches this server with a working directory the operator neither picks
-  // nor sees, and a missing log reads as a first run rather than an error. A relative
-  // default would hand back the whole daily budget on every launch from a new directory.
-  const auditPath = required(
-    env,
-    "AGENTVEINS_AUDIT",
-    "the audit log holds the spend counter, and a path that moves with the working directory silently resets it; give an absolute path",
+  const auditPath = env["AGENTVEINS_AUDIT"] ?? beside("audit.jsonl");
+  const anchorPath = env["AGENTVEINS_ANCHOR"] ?? beside("audit.anchor.json");
+  const approvalsPath = env["AGENTVEINS_APPROVALS"] ?? beside("approvals.json");
+  const signingKey = await loadOrCreateSigningKey(
+    env["AGENTVEINS_SIGNING_KEY"] ?? beside("operator.key.pem"),
   );
-  const anchorPath = env["AGENTVEINS_ANCHOR"];
-  const approvalsPath = env["AGENTVEINS_APPROVALS"];
-
-  if (anchorPath === undefined) {
-    // A warning, not a refusal: core treats the anchor as optional and this server should
-    // not be stricter than the library it serves.
-    process.stderr.write(
-      "agentveins-mcp: AGENTVEINS_ANCHOR is not set — without an anchor, a deleted audit log reads as a fresh start and restores the full budget\n",
-    );
-  }
 
   const guard = await createGuard({
     policy,
     adapters: [await buildAdapter(env, rail)],
     audit: fileAuditSink(auditPath),
+    // Anchored by default: without one a deleted log reads as a fresh start and restores the
+    // full budget, and the recommended configuration should not be the one you have to ask for.
+    anchor: fileAnchorStore(anchorPath),
     agent: env["AGENTVEINS_AGENT"] ?? "mcp-agent",
     logId: env["AGENTVEINS_LOG_ID"] ?? "mcp",
     signingKey,
-    ...(anchorPath === undefined ? {} : { anchor: fileAnchorStore(anchorPath) }),
-    ...(approvalsPath === undefined ? {} : { approvals: fileApprovalStore(approvalsPath) }),
+    ...(policy.approvals === undefined ? {} : { approvals: fileApprovalStore(approvalsPath) }),
   });
 
   return { guard, rail };
