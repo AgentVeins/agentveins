@@ -27,6 +27,18 @@ afterEach(() => {
   restoreStderr();
 });
 
+/** Only a policy on disk, and only the two variables that survive: what a real config now is. */
+async function bare(policy: unknown = {
+  budgets: [{ period: "per_tx", limit: "1.00", currency: "USDC" }],
+  vendors: { mode: "allowlist", entries: ["api.weather.com"] },
+  killSwitch: { frozen: false },
+}): Promise<{ env: Record<string, string>; dir: string }> {
+  const dir = await mkdtemp(join(tmpdir(), "av-mcp-bare-"));
+  const policyPath = join(dir, "policy.json");
+  await writeFile(policyPath, JSON.stringify(policy), "utf8");
+  return { env: { AGENTVEINS_POLICY: policyPath, AGENTVEINS_RAIL: "mock" }, dir };
+}
+
 async function workspace(policy: unknown = {
   budgets: [{ period: "per_tx", limit: "1.00", currency: "USDC" }],
   vendors: { mode: "allowlist", entries: ["api.weather.com"] },
@@ -71,26 +83,75 @@ describe("buildGuard", () => {
 
   // A guard replays its log at startup and refuses one it cannot verify, so a key generated
   // per launch would work once and then fail forever, pointing at the log rather than the key.
-  it("refuses to start with no signing key", async () => {
-    const env = await workspace();
-    delete env["AGENTVEINS_SIGNING_KEY"];
-    await expect(buildGuard(env)).rejects.toThrow(/AGENTVEINS_SIGNING_KEY/);
+  it("creates a signing key beside the policy on a first run, and says so", async () => {
+    const { env, dir } = await bare();
+    await buildGuard(env);
+
+    await expect(readFile(join(dir, "operator.key.pem"), "utf8")).resolves.toContain("PRIVATE KEY");
+    await expect(readFile(join(dir, "operator.pub.pem"), "utf8")).resolves.toContain("PUBLIC KEY");
+    expect(warnings.join("")).toContain("created a signing key");
   });
 
-  // The log is where the spend counter lives. An MCP client picks the working directory, so
-  // a relative default would silently restore the whole daily budget on a launch elsewhere.
-  it("refuses to start with no audit path", async () => {
-    const env = await workspace();
-    delete env["AGENTVEINS_AUDIT"];
-    await expect(buildGuard(env)).rejects.toThrow(/AGENTVEINS_AUDIT/);
+  it("reuses that key on the next run, which is the whole point of persisting it", async () => {
+    const { env, dir } = await bare();
+    await buildGuard(env);
+    const first = await readFile(join(dir, "operator.key.pem"), "utf8");
+
+    warnings.length = 0;
+    await buildGuard(env);
+
+    expect(await readFile(join(dir, "operator.key.pem"), "utf8")).toBe(first);
+    expect(warnings.join("")).not.toContain("created a signing key");
   });
 
-  it("builds without an anchor, warning rather than refusing", async () => {
-    const env = await workspace();
+  it("refuses an unreadable key rather than writing a new one over it", async () => {
+    const { env, dir } = await bare();
+    await writeFile(join(dir, "operator.key.pem"), "not a key", "utf8");
+
+    // Replacing it would orphan every entry the old key signed.
+    await expect(buildGuard(env)).rejects.toThrow(/not a readable private key/);
+  });
+
+  it("puts the log and the anchor beside the policy, not in the working directory", async () => {
+    const { env, dir } = await bare();
     const { guard } = await buildGuard(env);
+    await guard.pay({ to: "https://api.weather.com/f", amount: "0.01", currency: "USDC", reason: "r" });
+    await guard.flush();
 
-    expect(typeof guard.pay).toBe("function");
-    expect(warnings.join("")).toMatch(/AGENTVEINS_ANCHOR/);
+    // An MCP client picks the working directory and the operator never sees it; a log that
+    // lands there reads as empty on the next launch and hands back the whole daily budget.
+    await expect(readFile(join(dir, "audit.jsonl"), "utf8")).resolves.toContain("settled");
+    await expect(readFile(join(dir, "audit.anchor.json"), "utf8")).resolves.toContain("hash");
+  });
+
+  it("anchors by default, so a deleted log cannot read as a fresh start", async () => {
+    const { env } = await bare();
+    await buildGuard(env);
+
+    expect(warnings.join("")).not.toContain("ANCHOR");
+  });
+
+  it("puts the approval store beside the policy when the policy sets a threshold", async () => {
+    const { env, dir } = await bare({
+      budgets: [{ period: "per_tx", limit: "1.00", currency: "USDC" }],
+      vendors: { mode: "allowlist", entries: ["api.weather.com"] },
+      approvals: { above: "0.05" },
+      killSwitch: { frozen: false },
+    });
+    const { guard } = await buildGuard(env);
+    const result = await guard.pay({ to: "https://api.weather.com/f", amount: "0.10", currency: "USDC", reason: "r" });
+
+    // It built at all, which createGuard refuses without a store when a threshold is set.
+    expect(result.status).toBe("blocked");
+    expect(dir).toContain("av-mcp-bare-");
+  });
+
+  it("infers the solana rail from a keypair, and never infers mock", async () => {
+    const { env } = await bare();
+    delete env["AGENTVEINS_RAIL"];
+
+    await expect(buildGuard(env)).rejects.toThrow(/AGENTVEINS_RAIL/);
+    await expect(buildGuard({ ...env, SOLANA_KEYPAIR_PATH: "/nonexistent-keypair.json" })).rejects.toThrow();
   });
 
   it("refuses a policy file that is not JSON, naming the variable", async () => {
