@@ -39,6 +39,11 @@ npm install @agentveins/core @agentveins/adapter-solana
 
 `@agentveins/core` has **zero runtime dependencies**: it is the policy engine and the audit log, and it knows nothing about any chain. The Solana adapter ships separately so a project governing a different rail never installs 47MB of Solana and x402 machinery it will not call.
 
+`@agentveins/mcp` exposes the same guard as an MCP server, so any MCP-capable agent can call
+`pay`, `check`, and `spend_state` as tools instead of importing the SDK directly. It is not
+yet published to npm: clone this repo, `npm install && npm run build`, then point your MCP
+client at `packages/mcp/dist/bin.js`. See [`packages/mcp/README.md`](packages/mcp/README.md).
+
 ## Quickstart
 
 ```typescript
@@ -212,6 +217,7 @@ npx @agentveins/cli pending                       # what is waiting on a person
 npx @agentveins/cli approve 1 --ttl 15m           # grant the first row
 npm run demo                                      # direct mode against devnet; needs .env
 npm run vendor --workspace=@agentveins/demo       # the 402 vendor alone, on VENDOR_PORT
+node packages/mcp/dist/bin.js                     # refuses without a rail; see packages/mcp/README.md
 ```
 
 ### Settling on devnet
