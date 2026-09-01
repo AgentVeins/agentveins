@@ -1,0 +1,145 @@
+import { generateKeyPairSync } from "node:crypto";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import process from "node:process";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { buildGuard } from "../src/config.js";
+
+// buildGuard warns on stderr when no anchor is configured. Captured for the whole file so
+// the warning is assertable in one test and out of the runner's output in the rest.
+let warnings: string[] = [];
+let restoreStderr = (): void => {};
+
+beforeEach(() => {
+  const original = process.stderr.write.bind(process.stderr);
+  warnings = [];
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    warnings.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write;
+  restoreStderr = () => {
+    process.stderr.write = original;
+  };
+});
+
+afterEach(() => {
+  restoreStderr();
+});
+
+async function workspace(policy: unknown = {
+  budgets: [{ period: "per_tx", limit: "1.00", currency: "USDC" }],
+  vendors: { mode: "allowlist", entries: ["api.weather.com"] },
+  killSwitch: { frozen: false },
+}): Promise<Record<string, string>> {
+  const dir = await mkdtemp(join(tmpdir(), "av-mcp-"));
+  const policyPath = join(dir, "policy.json");
+  const keyPath = join(dir, "operator.key.pem");
+  await writeFile(policyPath, JSON.stringify(policy), "utf8");
+  await writeFile(
+    keyPath,
+    generateKeyPairSync("ed25519").privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+    "utf8",
+  );
+  return {
+    AGENTVEINS_POLICY: policyPath,
+    AGENTVEINS_SIGNING_KEY: keyPath,
+    AGENTVEINS_AUDIT: join(dir, "audit.jsonl"),
+    AGENTVEINS_AGENT: "mcp-agent",
+    AGENTVEINS_LOG_ID: "mcp-test",
+    AGENTVEINS_RAIL: "mock",
+  };
+}
+
+describe("buildGuard", () => {
+  it("builds a guard on the mock rail", async () => {
+    const { guard, rail } = await buildGuard(await workspace());
+    expect(rail).toBe("mock");
+    expect(typeof guard.pay).toBe("function");
+  });
+
+  it("refuses to start with no rail", async () => {
+    const env = await workspace();
+    delete env["AGENTVEINS_RAIL"];
+    await expect(buildGuard(env)).rejects.toThrow(/AGENTVEINS_RAIL/);
+  });
+
+  it("refuses an unknown rail", async () => {
+    await expect(buildGuard({ ...(await workspace()), AGENTVEINS_RAIL: "ethereum" }))
+      .rejects.toThrow(/AGENTVEINS_RAIL/);
+  });
+
+  // A guard replays its log at startup and refuses one it cannot verify, so a key generated
+  // per launch would work once and then fail forever, pointing at the log rather than the key.
+  it("refuses to start with no signing key", async () => {
+    const env = await workspace();
+    delete env["AGENTVEINS_SIGNING_KEY"];
+    await expect(buildGuard(env)).rejects.toThrow(/AGENTVEINS_SIGNING_KEY/);
+  });
+
+  // The log is where the spend counter lives. An MCP client picks the working directory, so
+  // a relative default would silently restore the whole daily budget on a launch elsewhere.
+  it("refuses to start with no audit path", async () => {
+    const env = await workspace();
+    delete env["AGENTVEINS_AUDIT"];
+    await expect(buildGuard(env)).rejects.toThrow(/AGENTVEINS_AUDIT/);
+  });
+
+  it("builds without an anchor, warning rather than refusing", async () => {
+    const env = await workspace();
+    const { guard } = await buildGuard(env);
+
+    expect(typeof guard.pay).toBe("function");
+    expect(warnings.join("")).toMatch(/AGENTVEINS_ANCHOR/);
+  });
+
+  it("refuses a policy file that is not JSON, naming the variable", async () => {
+    const env = await workspace();
+    await writeFile(env["AGENTVEINS_POLICY"] ?? "", "not json at all", "utf8");
+    await expect(buildGuard(env)).rejects.toThrow(/AGENTVEINS_POLICY/);
+  });
+
+  it("refuses to start with no policy", async () => {
+    const env = await workspace();
+    delete env["AGENTVEINS_POLICY"];
+    await expect(buildGuard(env)).rejects.toThrow(/AGENTVEINS_POLICY/);
+  });
+
+  it("refuses a policy the engine rejects", async () => {
+    const env = await workspace({ budgets: [], vendors: { mode: "allowlist", entries: [] }, killSwitch: {} });
+    await expect(buildGuard(env)).rejects.toThrow();
+  });
+
+  it("names the solana variables it is missing", async () => {
+    await expect(buildGuard({ ...(await workspace()), AGENTVEINS_RAIL: "solana" }))
+      .rejects.toThrow(/SOLANA_KEYPAIR_PATH/);
+  });
+
+  it("governs a payment on the mock rail with an unmistakable signature", async () => {
+    const { guard } = await buildGuard(await workspace());
+    const result = await guard.pay({ to: "https://api.weather.com/f", amount: "0.10", currency: "USDC", reason: "r" });
+
+    expect(result.status).toBe("settled");
+    if (result.status !== "settled") throw new Error("expected settled");
+    expect(result.txSig).toMatch(/^mock-/);
+  });
+
+  it("still enforces the policy on the mock rail", async () => {
+    const { guard } = await buildGuard(await workspace());
+    const result = await guard.pay({ to: "https://evil.example/f", amount: "0.10", currency: "USDC", reason: "r" });
+
+    expect(result.status).toBe("blocked");
+  });
+
+  it("records the mock rail on a refusal, not the rail it is standing in for", async () => {
+    const env = await workspace();
+    const { guard } = await buildGuard(env);
+    await guard.pay({ to: "https://evil.example/f", amount: "0.10", currency: "USDC", reason: "r" });
+    await guard.flush();
+
+    const log = await readFile(env["AGENTVEINS_AUDIT"] ?? "", "utf8");
+    const entry = JSON.parse(log.trim().split("\n")[0] ?? "{}") as { outcome: string; rail: string };
+    expect(entry.outcome).toBe("blocked");
+    expect(entry.rail).toBe("mock");
+  });
+});

@@ -4,13 +4,15 @@ import { sealAnchor, verifyAnchor } from "./audit/anchor.js";
 import { hashEntry, signHash, verifyAuditLog } from "./audit/entry.js";
 import { CHECKS, killSwitchCheck } from "./checks/index.js";
 import { InvalidRequestError } from "./errors.js";
+import { deepFreeze } from "./freeze.js";
 import { formatAmount, parseAmount } from "./money.js";
 import { validatePolicy } from "./policy.js";
 import { sanitizePaymentError, sanitizeSignature, sanitizeViolation } from "./sanitize.js";
 import { applyEntry, emptyState, replay } from "./state.js";
 import type {
-  Anchor, AnchorStore, ApprovalStore, AuditEntry, AuditOutcome, AuditSink, PayRequest, PayResult,
-  PaymentError, Policy, SpendState, UnsignedAuditEntry, Violation, WalletAdapter, WindowState,
+  Anchor, AnchorStore, Approval, ApprovalStore, AuditEntry, AuditOutcome, AuditSink, CheckResult,
+  PayRequest, PayResult, PaymentContext, PaymentError, Policy, SpendState, UnsignedAuditEntry,
+  Violation, WalletAdapter, WindowState,
 } from "./types.js";
 import { normalizeVendor } from "./vendor.js";
 
@@ -29,7 +31,19 @@ export interface GuardOptions {
 }
 
 export interface Guard {
+  /**
+   * The policy this guard enforces: a frozen deep copy taken at construction, not the object
+   * the caller passed in. Mutating that object afterwards changes nothing here, and this one
+   * cannot be mutated at all.
+   */
+  readonly policy: Policy;
   pay(req: PayRequest): Promise<PayResult>;
+  /**
+   * Evaluates a payment without making it: no rail call, no audit entry, no budget consumed,
+   * and no approval consumed. Deliberately not serialized — `pay` runs through one queue that
+   * may be waiting on a slow rail, and an advisory read must not wait behind it.
+   */
+  check(req: PayRequest): Promise<CheckResult>;
   /**
    * Closes the kill switch. It resolves as soon as the switch is closed — every later `pay`
    * is already blocked — while the control entry it appends is written behind whatever
@@ -60,6 +74,21 @@ interface WriteInput {
 interface WriteOutcome {
   id: string;
   recorded: boolean;
+}
+
+type Prepared =
+  | { ok: false; violation: Violation }
+  | {
+      ok: true;
+      amountMinor: bigint;
+      vendorNormalized: string;
+      adapter: WalletAdapter;
+      ctx: PaymentContext;
+    };
+
+interface Evaluated {
+  violation: Violation | null;
+  approvalThreshold: bigint | null;
 }
 
 const AUDIT_UNAVAILABLE_MESSAGE =
@@ -111,7 +140,11 @@ function snapshot(state: SpendState): SpendState {
 }
 
 export async function createGuard(options: GuardOptions): Promise<Guard> {
-  validatePolicy(options.policy);
+  // Enforced against a frozen copy, never the caller's object. The guard holds this for its
+  // lifetime, and a policy that could be edited afterwards would let a rule be widened with
+  // no violation and no audit entry — including by anyone holding the guard.
+  const policy: Policy = deepFreeze(JSON.parse(JSON.stringify(options.policy)) as Policy);
+  validatePolicy(policy);
   if (!Array.isArray(options.adapters) || options.adapters.length === 0) {
     throw new RangeError("createGuard requires at least one adapter");
   }
@@ -130,13 +163,13 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
   if (options.verifyingKey !== undefined && options.verifyingKey.type !== "public") {
     throw new TypeError("verifyingKey must be a public KeyObject");
   }
-  if (options.policy.approvals !== undefined && options.approvals === undefined) {
+  if (policy.approvals !== undefined && options.approvals === undefined) {
     throw new RangeError(
       "policy.approvals sets a threshold but no approval store was supplied; every payment above it would block with no way to approve one",
     );
   }
 
-  const { policy, adapters, audit, agent, logId, signingKey } = options;
+  const { adapters, audit, agent, logId, signingKey } = options;
   const anchorStore = options.anchor;
   const approvalStore = options.approvals;
   const verifyingKey = options.verifyingKey ?? createPublicKey(signingKey);
@@ -284,6 +317,146 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
     return value instanceof Date ? value : new Date(Number.NaN);
   }
 
+  // Request validation, lifted out of runPayment so `check` runs exactly the same admission
+  // rules as `pay` rather than a second implementation of them.
+  function prepare(req: PayRequest, ts: Date): Prepared {
+    try {
+      if (Number.isNaN(ts.getTime())) {
+        throw new RangeError("the clock returned an invalid Date");
+      }
+      if (req.currency !== "USDC") {
+        throw new InvalidRequestError("unsupported currency", { currency: String(req.currency) });
+      }
+      if (typeof req.reason !== "string") {
+        throw new TypeError("reason must be a string");
+      }
+      const amountMinor = parseAmount(req.amount);
+      if (amountMinor <= 0n) {
+        throw new InvalidRequestError("amount must be greater than zero", { amount: req.amount });
+      }
+      const vendorNormalized = normalizeVendor(req.to);
+      const adapter = pickAdapter(req.via);
+      return {
+        ok: true,
+        amountMinor,
+        vendorNormalized,
+        adapter,
+        ctx: {
+          vendor: req.to,
+          vendorNormalized,
+          amountMinor,
+          currency: req.currency,
+          reason: req.reason,
+          now: ts,
+        },
+      };
+    } catch (error) {
+      return { ok: false, violation: invalidRequest(error) };
+    }
+  }
+
+  // A check that throws is a policy problem, not an exception the agent should catch:
+  // payment-time failures return violations. The approval threshold is parsed inside the same
+  // guarded read, so a malformed policy blocks rather than throwing out of `pay` or `check`.
+  function evaluateChecks(ctx: PaymentContext): Evaluated {
+    let violation: Violation | null = null;
+    let approvalThreshold: bigint | null = null;
+    try {
+      for (const check of CHECKS) {
+        violation = check(ctx, policy, state);
+        if (violation !== null) {
+          break;
+        }
+      }
+      if (violation === null && policy.approvals !== undefined) {
+        approvalThreshold = parseAmount(policy.approvals.above);
+      }
+    } catch (error) {
+      violation = {
+        code: "invalid_request",
+        message: `the policy could not be evaluated: ${messageOf(error)}`,
+      };
+    }
+    return { violation, approvalThreshold };
+  }
+
+  async function runCheck(req: PayRequest): Promise<CheckResult> {
+    if (auditBroken) {
+      return {
+        status: "blocked",
+        violation: sanitizeViolation({ code: "audit_unavailable", message: AUDIT_UNAVAILABLE_MESSAGE }),
+      };
+    }
+
+    const prepared = prepare(req, readClock());
+    if (!prepared.ok) {
+      return { status: "blocked", violation: sanitizeViolation(prepared.violation) };
+    }
+
+    const { violation, approvalThreshold } = evaluateChecks(prepared.ctx);
+    if (violation !== null) {
+      return { status: "blocked", violation: sanitizeViolation(violation) };
+    }
+
+    if (approvalThreshold === null || prepared.amountMinor <= approvalThreshold) {
+      return { status: "allowed" };
+    }
+    if (approvalStore === undefined || policy.approvals === undefined) {
+      return {
+        status: "blocked",
+        violation: sanitizeViolation({
+          code: "approval_unavailable",
+          message: "no approval store is configured",
+        }),
+      };
+    }
+
+    const key = {
+      agent,
+      vendorNormalized: prepared.vendorNormalized,
+      amountMinor: prepared.amountMinor,
+    };
+    let found: Approval | null;
+    try {
+      found = await approvalStore.find(key);
+    } catch {
+      return {
+        status: "blocked",
+        violation: sanitizeViolation({
+          code: "approval_unavailable",
+          message: "the approval store could not be reached",
+        }),
+      };
+    }
+
+    // The store lookup above is the only await in this branch, so the switch is re-read here:
+    // a freeze landing while it was in flight must still block, matching what `pay` does after
+    // its own awaits.
+    const frozen = killSwitchCheck(prepared.ctx, policy, state);
+    if (frozen !== null) {
+      return { status: "blocked", violation: sanitizeViolation(frozen) };
+    }
+
+    // find, never consume: a dry run must not cost a person's decision.
+    const decision = decideApproval(found, key, prepared.ctx.now);
+    // A grant with no id has nothing to spend, so it is not honoured, matching `pay`.
+    if (decision !== "grant" || found === null || found.id === "") {
+      return {
+        status: "blocked",
+        violation: sanitizeViolation({
+          code: "approval_required",
+          message: "this payment is above the approval threshold and needs a human approval",
+          detail: {
+            threshold: policy.approvals.above,
+            attempted: formatAmount(prepared.amountMinor),
+            reason: decision === "grant" ? "missing" : decision,
+          },
+        }),
+      };
+    }
+    return { status: "allowed" };
+  }
+
   async function runPayment(req: PayRequest): Promise<PayResult> {
     if (auditBroken) {
       // No audit id: the attempt could not be recorded, which is exactly why it was blocked.
@@ -300,27 +473,9 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
     const auditTs = Number.isNaN(ts.getTime()) ? new Date() : ts;
     const fields = (typeof req === "object" && req !== null ? req : {}) as Partial<PayRequest>;
 
-    let amountMinor: bigint;
-    let vendorNormalized: string;
-    let adapter: WalletAdapter;
-    try {
-      if (Number.isNaN(ts.getTime())) {
-        throw new RangeError("the clock returned an invalid Date");
-      }
-      if (req.currency !== "USDC") {
-        throw new InvalidRequestError("unsupported currency", { currency: String(req.currency) });
-      }
-      if (typeof req.reason !== "string") {
-        throw new TypeError("reason must be a string");
-      }
-      amountMinor = parseAmount(req.amount);
-      if (amountMinor <= 0n) {
-        throw new InvalidRequestError("amount must be greater than zero", { amount: req.amount });
-      }
-      vendorNormalized = normalizeVendor(req.to);
-      adapter = pickAdapter(req.via);
-    } catch (error) {
-      const violation = invalidRequest(error);
+    const prepared = prepare(req, ts);
+    if (!prepared.ok) {
+      const violation = prepared.violation;
       const outcome = await write({
         kind: "payment",
         vendor: typeof fields.to === "string" ? fields.to : "",
@@ -337,34 +492,9 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
       });
       return { status: "blocked", violation, auditId: outcome.id };
     }
+    const { amountMinor, vendorNormalized, adapter, ctx } = prepared;
 
-    const ctx = {
-      vendor: req.to,
-      vendorNormalized,
-      amountMinor,
-      currency: req.currency,
-      reason: req.reason,
-      now: ts,
-    };
-
-    // A check that throws is a policy problem, not an exception the agent should catch:
-    // payment-time failures return violations. The approval threshold is parsed inside the same
-    // guarded read, so a malformed policy blocks rather than throwing out of `pay`.
-    let violation: Violation | null = null;
-    let approvalThreshold: bigint | null = null;
-    try {
-      for (const check of CHECKS) {
-        violation = check(ctx, policy, state);
-        if (violation !== null) {
-          break;
-        }
-      }
-      if (violation === null && policy.approvals !== undefined) {
-        approvalThreshold = parseAmount(policy.approvals.above);
-      }
-    } catch (error) {
-      violation = { code: "invalid_request", message: `the policy could not be evaluated: ${messageOf(error)}` };
-    }
+    const { violation, approvalThreshold } = evaluateChecks(ctx);
 
     // Every refusal crosses this one boundary, so a check that puts an untrusted vendor in
     // `detail` and the guard's own request errors are bounded and de-escaped identically.
@@ -503,7 +633,9 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
   }
 
   return {
+    policy,
     pay: (req) => serialize(() => runPayment(req)),
+    check: runCheck,
     // The kill switch closes before it is written, not after: queuing the flag behind an
     // in-flight payment would bound an emergency stop by the rail's slowest call. Only the
     // control entry's write is serialized, so it still lands in chain order. Unfreezing stays

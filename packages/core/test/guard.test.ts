@@ -146,6 +146,34 @@ describe("createGuard", () => {
       }),
     ).rejects.toThrow(/private/);
   });
+
+  it("exposes the policy it was constructed with", async () => {
+    const p = policy();
+    const guard = await makeGuard({ policy: p });
+    expect(guard.policy).toEqual(p);
+  });
+
+  // 0.30 sits strictly between the original per_tx limit (0.10) and the daily limit (0.50):
+  // if the mutation below reached enforcement, this payment would clear both budgets and
+  // settle, rather than being blocked by the untouched per_tx check.
+  it("enforces a copy, so mutating the caller's policy afterwards changes nothing", async () => {
+    const original = policy();
+    const guard = await makeGuard({ policy: original });
+    original.budgets[0]!.limit = "999999.00";
+
+    const result = await guard.pay({ to: "https://api.weather.com/f", amount: "0.30", currency: "USDC", reason: "r" });
+    expect(result.status).toBe("blocked");
+  });
+
+  it("hands out a policy that cannot be used to widen a rule", async () => {
+    const guard = await makeGuard({});
+    expect(() => {
+      (guard.policy.vendors.entries as string[]).push("evil.example");
+    }).toThrow();
+
+    const result = await guard.pay({ to: "https://evil.example/f", amount: "0.01", currency: "USDC", reason: "r" });
+    expect(result.status).toBe("blocked");
+  });
 });
 
 describe("guard.pay", () => {
@@ -596,7 +624,10 @@ describe("hardening", () => {
     expect(second.guard.state().frozen).toBe(true);
   });
 
-  it("returns invalid_request when a check throws on a policy mutated after construction", async () => {
+  // The guard now enforces a frozen copy taken at construction, so a mutation to the caller's
+  // object — even one that would fail validation — cannot reach evaluation at all: not as a
+  // corrupted value the checks must survive, and not as a widened rule either.
+  it("ignores a policy mutated after construction, rather than reading the corrupted value", async () => {
     const live = policy();
     const adapter = fakeAdapter();
     const guard = await createGuard({
@@ -610,8 +641,9 @@ describe("hardening", () => {
     });
 
     live.budgets[0]!.limit = "not-a-number";
-    expect(blockedCode(await guard.pay(request))).toBe("invalid_request");
-    expect(adapter.execute).toHaveBeenCalledTimes(0);
+    const result = await guard.pay(request);
+    expect(result.status).toBe("settled");
+    expect(adapter.execute).toHaveBeenCalledTimes(1);
   });
 
   it("rejects a non-positive amount at the boundary", async () => {
@@ -1244,5 +1276,157 @@ describe("approval gate", () => {
     const guard = await makeGuard({ policy: policy(), approvals: store });
 
     expect((await guard.pay({ to: "https://api.weather.com/f", amount: "0.10", currency: "USDC", reason: "r" })).status).toBe("settled");
+  });
+});
+
+describe("check", () => {
+  const approvalPolicy = { ...policy(), approvals: { above: "0.05" } };
+
+  it("allows a payment the policy permits", async () => {
+    const guard = await makeGuard({});
+    expect(await guard.check({ to: "https://api.weather.com/f", amount: "0.01", currency: "USDC", reason: "r" }))
+      .toEqual({ status: "allowed" });
+  });
+
+  it("reports the same violation pay would", async () => {
+    const guard = await makeGuard({});
+    const result = await guard.check({ to: "https://evil.example/f", amount: "0.01", currency: "USDC", reason: "r" });
+
+    expect(result.status).toBe("blocked");
+    if (result.status !== "blocked") throw new Error("expected blocked");
+    expect(result.violation.code).toBe("vendor_not_allowed");
+  });
+
+  it("reports approval_required for a payment that would be held", async () => {
+    const guard = await makeGuard({ policy: approvalPolicy, approvals: memoryApprovalStore([]) });
+    const result = await guard.check({ to: "https://api.weather.com/f", amount: "0.10", currency: "USDC", reason: "r" });
+
+    expect(result.status).toBe("blocked");
+    if (result.status !== "blocked") throw new Error("expected blocked");
+    expect(result.violation.code).toBe("approval_required");
+  });
+
+  it("allows a payment an unspent approval covers, and does not spend it", async () => {
+    const store = memoryApprovalStore([]);
+    const guard = await makeGuard({ policy: approvalPolicy, approvals: store });
+    await store.grant({
+      agent: "demo-agent",
+      vendorNormalized: "api.weather.com",
+      amountMinor: 100_000n,
+      expiresAt: "2999-01-01T00:00:00.000Z",
+    });
+
+    expect((await guard.check({ to: "https://api.weather.com/f", amount: "0.10", currency: "USDC", reason: "r" })).status)
+      .toBe("allowed");
+    expect(store.approvals[0]?.usedAt).toBeNull();
+  });
+
+  it("writes nothing to the audit log", async () => {
+    const sink = memoryAuditSink();
+    const guard = await makeGuard({ audit: sink });
+    await guard.check({ to: "https://api.weather.com/f", amount: "0.01", currency: "USDC", reason: "r" });
+
+    expect(sink.entries).toHaveLength(0);
+  });
+
+  it("consumes no budget", async () => {
+    const guard = await makeGuard({});
+    const before = guard.state();
+    await guard.check({ to: "https://api.weather.com/f", amount: "0.01", currency: "USDC", reason: "r" });
+
+    expect(guard.state()).toEqual(before);
+  });
+
+  it("reports an invalid request rather than throwing", async () => {
+    const guard = await makeGuard({});
+    const result = await guard.check({ to: "https://api.weather.com/f", amount: "-1", currency: "USDC", reason: "r" });
+
+    expect(result.status).toBe("blocked");
+    if (result.status !== "blocked") throw new Error("expected blocked");
+    expect(result.violation.code).toBe("invalid_request");
+  });
+
+  // The reason this exists at all: a dry run that disagrees with the real thing is worse
+  // than no dry run.
+  it("agrees with pay across every refusal", async () => {
+    const cases = [
+      { name: "fine", amount: "0.01", to: "https://api.weather.com/f" },
+      { name: "over per-tx", amount: "9.99", to: "https://api.weather.com/f" },
+      { name: "vendor", amount: "0.01", to: "https://evil.example/f" },
+    ];
+
+    for (const c of cases) {
+      const guard = await makeGuard({});
+      const req = { to: c.to, amount: c.amount, currency: "USDC" as const, reason: "r" };
+      const checked = await guard.check(req);
+      const paid = await guard.pay(req);
+
+      if (checked.status === "allowed") {
+        expect(paid.status, c.name).toBe("settled");
+      } else {
+        expect(paid.status, c.name).toBe("blocked");
+        if (paid.status !== "blocked") throw new Error("expected blocked");
+        expect(checked.violation.code, c.name).toBe(paid.violation.code);
+      }
+    }
+  });
+
+  it("agrees with pay when the payment needs approval", async () => {
+    const guard = await makeGuard({ policy: approvalPolicy, approvals: memoryApprovalStore([]) });
+    const req = { to: "https://api.weather.com/f", amount: "0.10", currency: "USDC" as const, reason: "r" };
+    const checked = await guard.check(req);
+    const paid = await guard.pay(req);
+
+    if (checked.status !== "blocked" || paid.status !== "blocked") throw new Error("expected both blocked");
+    expect(checked.violation.code).toBe(paid.violation.code);
+  });
+
+  it("blocks when the guard is frozen", async () => {
+    const guard = await makeGuard({});
+    await guard.freeze();
+    const result = await guard.check({ to: "https://api.weather.com/f", amount: "0.01", currency: "USDC", reason: "r" });
+
+    expect(result.status).toBe("blocked");
+    if (result.status !== "blocked") throw new Error("expected blocked");
+    expect(result.violation.code).toBe("kill_switch");
+  });
+
+  it("blocks when a freeze lands while the store is being read", async () => {
+    const store = memoryApprovalStore([]);
+    let guard: Guard;
+    const racing: ApprovalStore = {
+      grant: store.grant.bind(store),
+      consume: store.consume.bind(store),
+      find: async (key) => {
+        await guard.freeze();
+        return store.find(key);
+      },
+    };
+    guard = await makeGuard({ policy: approvalPolicy, approvals: racing });
+
+    const result = await guard.check({ to: "https://api.weather.com/f", amount: "0.10", currency: "USDC", reason: "r" });
+
+    expect(result.status).toBe("blocked");
+    if (result.status !== "blocked") throw new Error("expected blocked");
+    expect(result.violation.code).toBe("kill_switch");
+  });
+
+  it("refuses a granted approval carrying no id, as pay does", async () => {
+    const store = memoryApprovalStore([]);
+    const granted = await store.grant({
+      agent: "demo-agent",
+      vendorNormalized: "api.weather.com",
+      amountMinor: 100_000n,
+      expiresAt: "2999-01-01T00:00:00.000Z",
+    });
+    const broken: ApprovalStore = {
+      grant: store.grant.bind(store),
+      consume: store.consume.bind(store),
+      find: async () => ({ ...granted, id: "" }),
+    };
+    const guard = await makeGuard({ policy: approvalPolicy, approvals: broken });
+
+    const result = await guard.check({ to: "https://api.weather.com/f", amount: "0.10", currency: "USDC", reason: "r" });
+    expect(result.status).toBe("blocked");
   });
 });
