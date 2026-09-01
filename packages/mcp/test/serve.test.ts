@@ -1,10 +1,11 @@
 import { generateKeyPairSync } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createGuard, memoryAuditSink } from "@agentveins/core";
 import type { Policy } from "@agentveins/core";
 import { describe, expect, it } from "vitest";
-import { buildServer } from "../src/serve.js";
+import { buildServer, SERVER_VERSION } from "../src/serve.js";
 
 const policy: Policy = {
   budgets: [{ period: "per_tx", limit: "1.00", currency: "USDC" }],
@@ -29,6 +30,17 @@ async function connected() {
 }
 
 describe("the server", () => {
+  // The constant cannot import the manifest — rootDir is src, so package.json is outside the
+  // compilation — and a version bump that misses it makes the handshake report a version the
+  // package no longer is. The manifest resolves from this file, not from the process cwd.
+  it("reports the package's own version", async () => {
+    const manifest = JSON.parse(
+      await readFile(new URL("../package.json", import.meta.url), "utf8"),
+    ) as { version: string };
+
+    expect(SERVER_VERSION).toBe(manifest.version);
+  });
+
   it("advertises the three tools", async () => {
     const client = await connected();
     const { tools } = await client.listTools();
