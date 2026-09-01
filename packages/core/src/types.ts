@@ -118,6 +118,14 @@ export type PayResult =
   | { status: "blocked"; violation: Violation; auditId: string }
   | { status: "failed"; error: PaymentError; auditId: string };
 
+/**
+ * What `check` reports. Advisory: an `allowed` answer is a snapshot, not a promise — a
+ * concurrent payment can consume the budget, or the approval, before the payment is made.
+ */
+export type CheckResult =
+  | { status: "allowed" }
+  | { status: "blocked"; violation: Violation };
+
 export interface SettlementRequest {
   to: string;
   amountMinor: bigint;

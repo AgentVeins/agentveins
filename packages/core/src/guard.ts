@@ -9,9 +9,9 @@ import { validatePolicy } from "./policy.js";
 import { sanitizePaymentError, sanitizeSignature, sanitizeViolation } from "./sanitize.js";
 import { applyEntry, emptyState, replay } from "./state.js";
 import type {
-  Anchor, AnchorStore, ApprovalStore, AuditEntry, AuditOutcome, AuditSink, PayRequest, PayResult,
-  PaymentContext, PaymentError, Policy, SpendState, UnsignedAuditEntry, Violation, WalletAdapter,
-  WindowState,
+  Anchor, AnchorStore, Approval, ApprovalStore, AuditEntry, AuditOutcome, AuditSink, CheckResult,
+  PayRequest, PayResult, PaymentContext, PaymentError, Policy, SpendState, UnsignedAuditEntry,
+  Violation, WalletAdapter, WindowState,
 } from "./types.js";
 import { normalizeVendor } from "./vendor.js";
 
@@ -31,6 +31,12 @@ export interface GuardOptions {
 
 export interface Guard {
   pay(req: PayRequest): Promise<PayResult>;
+  /**
+   * Evaluates a payment without making it: no rail call, no audit entry, no budget consumed,
+   * and no approval consumed. Deliberately not serialized — `pay` runs through one queue that
+   * may be waiting on a slow rail, and an advisory read must not wait behind it.
+   */
+  check(req: PayRequest): Promise<CheckResult>;
   /**
    * Closes the kill switch. It resolves as soon as the switch is closed — every later `pay`
    * is already blocked — while the control entry it appends is written behind whatever
@@ -338,6 +344,9 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
     }
   }
 
+  // A check that throws is a policy problem, not an exception the agent should catch:
+  // payment-time failures return violations. The approval threshold is parsed inside the same
+  // guarded read, so a malformed policy blocks rather than throwing out of `pay`.
   function evaluateChecks(ctx: PaymentContext): Evaluated {
     let violation: Violation | null = null;
     let approvalThreshold: bigint | null = null;
@@ -358,6 +367,68 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
       };
     }
     return { violation, approvalThreshold };
+  }
+
+  async function runCheck(req: PayRequest): Promise<CheckResult> {
+    if (auditBroken) {
+      return {
+        status: "blocked",
+        violation: sanitizeViolation({ code: "audit_unavailable", message: AUDIT_UNAVAILABLE_MESSAGE }),
+      };
+    }
+
+    const prepared = prepare(req, readClock());
+    if (!prepared.ok) {
+      return { status: "blocked", violation: sanitizeViolation(prepared.violation) };
+    }
+
+    const { violation, approvalThreshold } = evaluateChecks(prepared.ctx);
+    if (violation !== null) {
+      return { status: "blocked", violation: sanitizeViolation(violation) };
+    }
+
+    if (approvalThreshold === null || prepared.amountMinor <= approvalThreshold) {
+      return { status: "allowed" };
+    }
+    if (approvalStore === undefined) {
+      return {
+        status: "blocked",
+        violation: sanitizeViolation({
+          code: "approval_unavailable",
+          message: "no approval store is configured",
+        }),
+      };
+    }
+
+    const key = {
+      agent,
+      vendorNormalized: prepared.vendorNormalized,
+      amountMinor: prepared.amountMinor,
+    };
+    let found: Approval | null;
+    try {
+      found = await approvalStore.find(key);
+    } catch {
+      return {
+        status: "blocked",
+        violation: sanitizeViolation({
+          code: "approval_unavailable",
+          message: "the approval store could not be reached",
+        }),
+      };
+    }
+
+    // find, never consume: a dry run must not cost a person's decision.
+    if (decideApproval(found, key, prepared.ctx.now) !== "grant") {
+      return {
+        status: "blocked",
+        violation: sanitizeViolation({
+          code: "approval_required",
+          message: "this payment is above the approval threshold and needs a human approval",
+        }),
+      };
+    }
+    return { status: "allowed" };
   }
 
   async function runPayment(req: PayRequest): Promise<PayResult> {
@@ -537,6 +608,7 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
 
   return {
     pay: (req) => serialize(() => runPayment(req)),
+    check: runCheck,
     // The kill switch closes before it is written, not after: queuing the flag behind an
     // in-flight payment would bound an emergency stop by the rail's slowest call. Only the
     // control entry's write is serialized, so it still lands in chain order. Unfreezing stays
