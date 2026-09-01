@@ -1,0 +1,28 @@
+{
+  "name": "@agentveins/mcp",
+  "version": "0.4.0",
+  "description": "MCP server for AgentVeins: governed payments as a tool any agent can call.",
+  "license": "MIT",
+  "type": "module",
+  "repository": { "type": "git", "url": "git+https://github.com/AgentVeins/agentveins.git", "directory": "packages/mcp" },
+  "homepage": "https://github.com/AgentVeins/agentveins#readme",
+  "bugs": "https://github.com/AgentVeins/agentveins/issues",
+  "keywords": ["ai-agents", "mcp", "payments", "spend-controls", "model-context-protocol"],
+  "engines": { "node": ">=20" },
+  "bin": { "agentveins-mcp": "./dist/bin.js" },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": "./dist/index.js" },
+  "files": ["dist"],
+  "dependencies": {
+    "@agentveins/adapter-solana": "^0.4.0",
+    "@agentveins/core": "^0.4.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.5.4"
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "prepublishOnly": "tsc --build --force && vitest run --root ../..",
+    "typecheck": "tsc -p tsconfig.test.json"
+  }
+}
