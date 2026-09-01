@@ -1,0 +1,23 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "agentveins",
+  "metadata": {
+    "description": "Spend governance for AI agents: budgets, allowlists, human approval, and a signed audit log."
+  },
+  "owner": {
+    "name": "AgentVeins",
+    "url": "https://github.com/AgentVeins"
+  },
+  "plugins": [
+    {
+      "name": "agentveins",
+      "description": "Put a spend policy between your agent and its wallet. Budgets, vendor allowlists, human approval above a threshold, a kill switch, and a tamper-evident audit log — enforced by an MCP server that holds the key, so the agent cannot pay around it.",
+      "version": "0.6.0",
+      "author": { "name": "AgentVeins", "url": "https://github.com/AgentVeins" },
+      "source": "./plugin",
+      "category": "productivity",
+      "homepage": "https://docs.agentveins.com",
+      "tags": ["payments", "agents", "governance", "spend-controls", "audit", "x402", "solana"]
+    }
+  ]
+}
