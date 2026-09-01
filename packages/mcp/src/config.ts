@@ -1,5 +1,6 @@
 import { createPrivateKey } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import process from "node:process";
 import { createGuard } from "@agentveins/core";
 import { fileAnchorStore, fileApprovalStore, fileAuditSink } from "@agentveins/core/fs";
 import { solanaAdapter } from "@agentveins/adapter-solana";
@@ -20,6 +21,33 @@ function required(env: NodeJS.ProcessEnv, name: string, why: string): string {
     throw new Error(`${name} is not set: ${why}`);
   }
   return value;
+}
+
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Parsed here rather than inside the guard so a missing or malformed file is refused by the
+ * name of the variable that points at it, not by a JSON error naming nothing.
+ */
+async function readPolicy(path: string): Promise<Policy> {
+  let source: string;
+  try {
+    source = await readFile(path, "utf8");
+  } catch (error) {
+    throw new Error(`AGENTVEINS_POLICY points at ${path}, which cannot be read: ${message(error)}`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(source);
+  } catch (error) {
+    throw new Error(`AGENTVEINS_POLICY points at ${path}, which is not valid JSON: ${message(error)}`);
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`AGENTVEINS_POLICY points at ${path}, which is not a JSON object describing a policy`);
+  }
+  return parsed as Policy;
 }
 
 /**
@@ -63,7 +91,7 @@ export async function buildGuard(env: NodeJS.ProcessEnv): Promise<BuiltGuard> {
   }
 
   const policyPath = required(env, "AGENTVEINS_POLICY", "the guard needs a policy to enforce");
-  const policy = JSON.parse(await readFile(policyPath, "utf8")) as Policy;
+  const policy = await readPolicy(policyPath);
 
   // A guard replays its audit log at startup and refuses one it cannot verify, so a key
   // generated per launch would work exactly once. An MCP client restarts its servers often.
@@ -74,9 +102,24 @@ export async function buildGuard(env: NodeJS.ProcessEnv): Promise<BuiltGuard> {
   );
   const signingKey = createPrivateKey(await readFile(keyPath, "utf8"));
 
-  const auditPath = env["AGENTVEINS_AUDIT"] ?? "./audit.jsonl";
+  // An MCP client launches this server with a working directory the operator neither picks
+  // nor sees, and a missing log reads as a first run rather than an error. A relative
+  // default would hand back the whole daily budget on every launch from a new directory.
+  const auditPath = required(
+    env,
+    "AGENTVEINS_AUDIT",
+    "the audit log holds the spend counter, and a path that moves with the working directory silently resets it; give an absolute path",
+  );
   const anchorPath = env["AGENTVEINS_ANCHOR"];
   const approvalsPath = env["AGENTVEINS_APPROVALS"];
+
+  if (anchorPath === undefined) {
+    // A warning, not a refusal: core treats the anchor as optional and this server should
+    // not be stricter than the library it serves.
+    process.stderr.write(
+      "agentveins-mcp: AGENTVEINS_ANCHOR is not set — without an anchor, a deleted audit log reads as a fresh start and restores the full budget\n",
+    );
+  }
 
   const guard = await createGuard({
     policy,

@@ -20,9 +20,9 @@ Then point any MCP-capable agent at the built binary:
       "args": ["/absolute/path/to/agentveins/packages/mcp/dist/bin.js"],
       "env": {
         "AGENTVEINS_RAIL": "mock",
-        "AGENTVEINS_POLICY": "./policy.json",
-        "AGENTVEINS_SIGNING_KEY": "./operator.key.pem",
-        "AGENTVEINS_AUDIT": "./audit.jsonl"
+        "AGENTVEINS_POLICY": "/absolute/path/to/policy.json",
+        "AGENTVEINS_SIGNING_KEY": "/absolute/path/to/operator.key.pem",
+        "AGENTVEINS_AUDIT": "/absolute/path/to/audit.jsonl"
       }
     }
   }
@@ -51,13 +51,18 @@ retry against it. Only a rail failure is an error.
 | `AGENTVEINS_RAIL` | `solana`, or `mock` to govern payments that never move money |
 | `AGENTVEINS_POLICY` | path to the policy JSON |
 | `AGENTVEINS_SIGNING_KEY` | ed25519 private key, PEM. Must persist between runs |
-| `AGENTVEINS_AUDIT` / `_ANCHOR` / `_APPROVALS` | store paths |
+| `AGENTVEINS_AUDIT` | absolute path to the audit log — it holds the spend counter |
+| `AGENTVEINS_ANCHOR` / `_APPROVALS` | optional store paths |
 | `AGENTVEINS_AGENT` / `_LOG_ID` | identity recorded on every entry |
 | `SOLANA_KEYPAIR_PATH` / `SOLANA_RPC_URL` | when the rail is `solana` |
 | `SOLANA_MODE` | `direct` or `x402`; defaults to `direct` |
 
-The server refuses to start without a rail and without a signing key, and its error names
-the missing variable. The key must persist: a guard replays its audit log at startup and
+The server refuses to start without a rail, a policy, a signing key, or an audit path, and
+its error names the missing variable. The audit path is required rather than defaulted: an
+MCP client launches this server with a working directory you neither pick nor see, and a
+log that is missing there reads as a first run — a silently reset budget. `AGENTVEINS_ANCHOR`
+is optional, but without it a deleted log reads the same way, so the server warns on stderr
+when it is unset. The key must persist: a guard replays its audit log at startup and
 refuses one it cannot verify, so a key generated per launch would work exactly once and
 then fail forever.
 

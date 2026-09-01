@@ -2,8 +2,30 @@ import { generateKeyPairSync } from "node:crypto";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import process from "node:process";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildGuard } from "../src/config.js";
+
+// buildGuard warns on stderr when no anchor is configured. Captured for the whole file so
+// the warning is assertable in one test and out of the runner's output in the rest.
+let warnings: string[] = [];
+let restoreStderr = (): void => {};
+
+beforeEach(() => {
+  const original = process.stderr.write.bind(process.stderr);
+  warnings = [];
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    warnings.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write;
+  restoreStderr = () => {
+    process.stderr.write = original;
+  };
+});
+
+afterEach(() => {
+  restoreStderr();
+});
 
 async function workspace(policy: unknown = {
   budgets: [{ period: "per_tx", limit: "1.00", currency: "USDC" }],
@@ -53,6 +75,28 @@ describe("buildGuard", () => {
     const env = await workspace();
     delete env["AGENTVEINS_SIGNING_KEY"];
     await expect(buildGuard(env)).rejects.toThrow(/AGENTVEINS_SIGNING_KEY/);
+  });
+
+  // The log is where the spend counter lives. An MCP client picks the working directory, so
+  // a relative default would silently restore the whole daily budget on a launch elsewhere.
+  it("refuses to start with no audit path", async () => {
+    const env = await workspace();
+    delete env["AGENTVEINS_AUDIT"];
+    await expect(buildGuard(env)).rejects.toThrow(/AGENTVEINS_AUDIT/);
+  });
+
+  it("builds without an anchor, warning rather than refusing", async () => {
+    const env = await workspace();
+    const { guard } = await buildGuard(env);
+
+    expect(typeof guard.pay).toBe("function");
+    expect(warnings.join("")).toMatch(/AGENTVEINS_ANCHOR/);
+  });
+
+  it("refuses a policy file that is not JSON, naming the variable", async () => {
+    const env = await workspace();
+    await writeFile(env["AGENTVEINS_POLICY"] ?? "", "not json at all", "utf8");
+    await expect(buildGuard(env)).rejects.toThrow(/AGENTVEINS_POLICY/);
   });
 
   it("refuses to start with no policy", async () => {
