@@ -1,6 +1,6 @@
 {
   "name": "@agentveins/demo",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,8 +13,8 @@
     "test:devnet:approvals": "DEVNET_SETTLE=1 vitest run --root ../.. examples/demo/test/devnet-approval.test.ts"
   },
   "dependencies": {
-    "@agentveins/adapter-solana": "^0.5.0",
-    "@agentveins/core": "^0.5.0",
+    "@agentveins/adapter-solana": "^0.6.0",
+    "@agentveins/core": "^0.6.0",
     "@solana/kit": "^7.0.0",
     "@x402/core": "^2.22.0",
     "@x402/svm": "^2.22.0",
