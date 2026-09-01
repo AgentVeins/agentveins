@@ -30,6 +30,8 @@ export interface GuardOptions {
 }
 
 export interface Guard {
+  /** The policy this guard was constructed with — the same object, since policy is data. */
+  readonly policy: Policy;
   pay(req: PayRequest): Promise<PayResult>;
   /**
    * Evaluates a payment without making it: no rail call, no audit entry, no budget consumed,
@@ -622,6 +624,7 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
   }
 
   return {
+    policy,
     pay: (req) => serialize(() => runPayment(req)),
     check: runCheck,
     // The kill switch closes before it is written, not after: queuing the flag behind an

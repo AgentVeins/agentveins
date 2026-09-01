@@ -146,6 +146,12 @@ describe("createGuard", () => {
       }),
     ).rejects.toThrow(/private/);
   });
+
+  it("exposes the policy it was constructed with", async () => {
+    const p = policy();
+    const guard = await makeGuard({ policy: p });
+    expect(guard.policy).toEqual(p);
+  });
 });
 
 describe("guard.pay", () => {
