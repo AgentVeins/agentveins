@@ -39,10 +39,26 @@ npm install @agentveins/core @agentveins/adapter-solana
 
 `@agentveins/core` has **zero runtime dependencies**: it is the policy engine and the audit log, and it knows nothing about any chain. The Solana adapter ships separately so a project governing a different rail never installs 47MB of Solana and x402 machinery it will not call.
 
-`@agentveins/mcp` exposes the same guard as an MCP server, so any MCP-capable agent can call
-`pay`, `check`, and `spend_state` as tools instead of importing the SDK directly. It is not
-yet published to npm: clone this repo, `npm install && npm run build`, then point your MCP
-client at `packages/mcp/dist/bin.js`. See [`packages/mcp/README.md`](packages/mcp/README.md).
+`@agentveins/mcp` exposes the same guard as an MCP server, so any MCP-capable agent calls
+`pay`, `check` and `spend_state` as tools instead of importing the SDK. The wallet key stays
+in that server, which is what makes the governance hold: an agent cannot pay around a guard
+whose key it does not have.
+
+```bash
+npm install @agentveins/mcp
+```
+
+On Claude Code there is a plugin that bundles the server with a skill for using it — when to
+check before planning, and which refusals mean stop rather than retry:
+
+```
+/plugin marketplace add AgentVeins/agentveins
+/plugin install agentveins
+```
+
+Point either at a policy file with `AGENTVEINS_POLICY`. The audit log, its anchor, the
+approval store and the signing key are all created beside it on first run. See
+[`packages/mcp/README.md`](packages/mcp/README.md).
 
 ## Quickstart
 
