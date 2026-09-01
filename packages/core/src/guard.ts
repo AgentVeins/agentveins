@@ -4,6 +4,7 @@ import { sealAnchor, verifyAnchor } from "./audit/anchor.js";
 import { hashEntry, signHash, verifyAuditLog } from "./audit/entry.js";
 import { CHECKS, killSwitchCheck } from "./checks/index.js";
 import { InvalidRequestError } from "./errors.js";
+import { deepFreeze } from "./freeze.js";
 import { formatAmount, parseAmount } from "./money.js";
 import { validatePolicy } from "./policy.js";
 import { sanitizePaymentError, sanitizeSignature, sanitizeViolation } from "./sanitize.js";
@@ -135,7 +136,11 @@ function snapshot(state: SpendState): SpendState {
 }
 
 export async function createGuard(options: GuardOptions): Promise<Guard> {
-  validatePolicy(options.policy);
+  // Enforced against a frozen copy, never the caller's object. The guard holds this for its
+  // lifetime, and a policy that could be edited afterwards would let a rule be widened with
+  // no violation and no audit entry — including by anyone holding the guard.
+  const policy: Policy = deepFreeze(JSON.parse(JSON.stringify(options.policy)) as Policy);
+  validatePolicy(policy);
   if (!Array.isArray(options.adapters) || options.adapters.length === 0) {
     throw new RangeError("createGuard requires at least one adapter");
   }
@@ -154,13 +159,13 @@ export async function createGuard(options: GuardOptions): Promise<Guard> {
   if (options.verifyingKey !== undefined && options.verifyingKey.type !== "public") {
     throw new TypeError("verifyingKey must be a public KeyObject");
   }
-  if (options.policy.approvals !== undefined && options.approvals === undefined) {
+  if (policy.approvals !== undefined && options.approvals === undefined) {
     throw new RangeError(
       "policy.approvals sets a threshold but no approval store was supplied; every payment above it would block with no way to approve one",
     );
   }
 
-  const { policy, adapters, audit, agent, logId, signingKey } = options;
+  const { adapters, audit, agent, logId, signingKey } = options;
   const anchorStore = options.anchor;
   const approvalStore = options.approvals;
   const verifyingKey = options.verifyingKey ?? createPublicKey(signingKey);

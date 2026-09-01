@@ -152,6 +152,28 @@ describe("createGuard", () => {
     const guard = await makeGuard({ policy: p });
     expect(guard.policy).toEqual(p);
   });
+
+  // 0.30 sits strictly between the original per_tx limit (0.10) and the daily limit (0.50):
+  // if the mutation below reached enforcement, this payment would clear both budgets and
+  // settle, rather than being blocked by the untouched per_tx check.
+  it("enforces a copy, so mutating the caller's policy afterwards changes nothing", async () => {
+    const original = policy();
+    const guard = await makeGuard({ policy: original });
+    original.budgets[0]!.limit = "999999.00";
+
+    const result = await guard.pay({ to: "https://api.weather.com/f", amount: "0.30", currency: "USDC", reason: "r" });
+    expect(result.status).toBe("blocked");
+  });
+
+  it("hands out a policy that cannot be used to widen a rule", async () => {
+    const guard = await makeGuard({});
+    expect(() => {
+      (guard.policy.vendors.entries as string[]).push("evil.example");
+    }).toThrow();
+
+    const result = await guard.pay({ to: "https://evil.example/f", amount: "0.01", currency: "USDC", reason: "r" });
+    expect(result.status).toBe("blocked");
+  });
 });
 
 describe("guard.pay", () => {
@@ -602,7 +624,10 @@ describe("hardening", () => {
     expect(second.guard.state().frozen).toBe(true);
   });
 
-  it("returns invalid_request when a check throws on a policy mutated after construction", async () => {
+  // The guard now enforces a frozen copy taken at construction, so a mutation to the caller's
+  // object — even one that would fail validation — cannot reach evaluation at all: not as a
+  // corrupted value the checks must survive, and not as a widened rule either.
+  it("ignores a policy mutated after construction, rather than reading the corrupted value", async () => {
     const live = policy();
     const adapter = fakeAdapter();
     const guard = await createGuard({
@@ -616,8 +641,9 @@ describe("hardening", () => {
     });
 
     live.budgets[0]!.limit = "not-a-number";
-    expect(blockedCode(await guard.pay(request))).toBe("invalid_request");
-    expect(adapter.execute).toHaveBeenCalledTimes(0);
+    const result = await guard.pay(request);
+    expect(result.status).toBe("settled");
+    expect(adapter.execute).toHaveBeenCalledTimes(1);
   });
 
   it("rejects a non-positive amount at the boundary", async () => {
