@@ -31,7 +31,11 @@ export interface GuardOptions {
 }
 
 export interface Guard {
-  /** The policy this guard was constructed with — the same object, since policy is data. */
+  /**
+   * The policy this guard enforces: a frozen deep copy taken at construction, not the object
+   * the caller passed in. Mutating that object afterwards changes nothing here, and this one
+   * cannot be mutated at all.
+   */
   readonly policy: Policy;
   pay(req: PayRequest): Promise<PayResult>;
   /**
