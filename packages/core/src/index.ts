@@ -1,6 +1,6 @@
 export { InvalidRequestError, NotImplementedError } from "./errors.js";
 export { createGuard, type Guard, type GuardOptions } from "./guard.js";
-export { validatePolicy, MAX_VELOCITY_WINDOW_MS } from "./policy.js";
+export { validatePolicy } from "./policy.js";
 export { normalizeVendor } from "./vendor.js";
 export { formatAmount, parseAmount, USDC_DECIMALS } from "./money.js";
 export { parseDuration } from "./duration.js";
