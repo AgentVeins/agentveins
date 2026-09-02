@@ -34,16 +34,19 @@ refused you. What to do depends on which:
 | Refused by | What to do |
 | --- | --- |
 | `budget_exceeded` | Try a smaller amount, or stop and tell the user the budget is spent |
+| `velocity_exceeded` | **Wait.** The pace cap was hit — the refusal names the window. Do not switch vendors or shrink the amount; neither resets the clock. Continue after the window passes |
 | `vendor_not_allowed` | This vendor is not approved. Do not try a different URL for the same vendor — ask the user to add it |
 | `approval_required` | **Stop and tell the user.** A person must approve this exact payment. Retrying will not help; quote the audit id so they can find it |
 | `kill_switch` | **Stop entirely.** The agent is frozen and every payment will be refused. Tell the user |
 | `audit_unavailable` | **Stop entirely.** The guard cannot record, so it will not authorise. Tell the user |
 | `approval_unavailable` | The approval store could not be read. Tell the user; a different amount will not help |
 
-The three marked *stop* are the ones that matter. A frozen or latched guard refuses
-everything, so walking down the vendor list or trying smaller amounts just produces a long
-row of refusals in the audit log and gets nowhere. When the answer is "no, and it will stay
-no", say so and stop.
+Two refusals stop everything: a frozen guard and a latched one refuse every payment, so
+walking down the vendor list just produces a long row of refusals in the audit log — stop
+and tell the user. One stops a single payment: `approval_required` parks that payment until
+a person decides, and other work continues. And one means wait: a velocity block clears on
+its own — the only refusal that does — so waiting is the correct move and the only one that
+works.
 
 ## Writing a good reason
 

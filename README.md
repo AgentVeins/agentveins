@@ -25,7 +25,7 @@ Every payment your agent attempts passes through the guard **before money moves*
 | **Recipients** | Is the money going to an address you approved, not one the vendor named? |
 | **Kill switch** | Is this agent still authorized at all? |
 | **Approval** | Is this above the amount a human must sign off on? |
-| **Velocity** *(roadmap)* | Is this normal behavior, or a runaway loop? |
+| **Velocity** | Is this normal behavior, or a runaway loop? |
 
 Payments that pass proceed untouched. The agent never notices. Payments that fail return a structured violation the agent can handle gracefully. Every attempt, allowed or blocked, lands in a tamper-evident audit log: what was paid, to whom, when, and the stated reason.
 
@@ -76,6 +76,7 @@ const policy: Policy = {
   recipients: { mode: "allowlist", entries: ["9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"] },
   killSwitch: { frozen: false },
   approvals: { above: "5.00" },      // above this, a human must approve
+  velocity: [{ window: "10m", maxPayments: 20 }], // pace cap: a runaway loop trips this first
 };
 
 const guard = await createGuard({
@@ -226,6 +227,7 @@ depends on it rather than in the one that is actually stale.
 npm run demo -- --mock                            # five acts, no network, no keys
 npm run demo -- --x402                            # the x402 act, printing the HTTP handshake
 npm run demo -- --approvals                       # the approval act: blocked, approved, settled
+npm run demo -- --velocity                        # a runaway loop stopped by pace, not budget
 npm run demo -- --hold                            # stop at the block; a person approves, then rerun
 npm run demo -- --hold --reset                    # ...starting from nothing
 
@@ -332,7 +334,7 @@ It sits between your agent and its money. Every wallet, rail, and framework is a
 - [x] Signed audit log
 - [x] Approval workflows: a threshold above which a human must approve, bound to exact terms and spent on use
 - [ ] Base adapter
-- [ ] Velocity rules
+- [x] Velocity rules: caps on payments and amount per sliding window, rebuilt from the log so a restart cannot reset the clock
 - [ ] Hosted dashboard: team policies, alerts, compliance exports
 - [ ] Privacy: payment-metadata redaction
 

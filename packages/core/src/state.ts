@@ -1,3 +1,4 @@
+import { MAX_VELOCITY_WINDOW_MS } from "./policy.js";
 import type { AuditEntry, BudgetPeriod, Policy, SpendState } from "./types.js";
 
 const AMOUNT_MINOR_PATTERN = /^\d+$/;
@@ -24,7 +25,7 @@ export function windowKey(period: BudgetPeriod, now: Date): string {
 }
 
 export function emptyState(policy: Policy): SpendState {
-  return { frozen: policy.killSwitch.frozen, windows: {}, seq: 0, prevHash: "" };
+  return { frozen: policy.killSwitch.frozen, windows: {}, recent: [], seq: 0, prevHash: "" };
 }
 
 export function spentInWindow(state: SpendState, period: BudgetPeriod, now: Date): bigint {
@@ -38,6 +39,7 @@ export function applyEntry(state: SpendState, entry: AuditEntry): SpendState {
   const next: SpendState = {
     frozen: state.frozen,
     windows: { ...state.windows },
+    recent: [...state.recent],
     seq: state.seq + 1,
     prevHash: entry.hash,
   };
@@ -77,6 +79,19 @@ export function applyEntry(state: SpendState, entry: AuditEntry): SpendState {
     start: utcDay(parsedTs),
     spentMinor: current === undefined ? amount : current.spentMinor + amount,
   };
+
+  // The velocity horizon. Pruned against the entry's own timestamp rather than the wall clock,
+  // so replay stays a pure fold: two replays of one log always produce one state.
+  next.recent.push({ ts: entry.ts, amountMinor: amount });
+  // Pruned against the entry being applied, never the max over the list: a max is monotone,
+  // so one future-dated timestamp — a host clock jumping forward during a single payment —
+  // would pin the horizon forever and silently disable velocity for good. Keyed this way, an
+  // out-of-order older entry moves the horizon back and evicts nothing newer; a future-dated
+  // one evicts history once, then every later real entry prunes against its own real time and
+  // the window rebuilds. The poison lingers and over-counts — which blocks more, the direction
+  // this guard always rounds — instead of failing open.
+  const horizon = parsedTs.getTime() - MAX_VELOCITY_WINDOW_MS;
+  next.recent = next.recent.filter((item) => Date.parse(item.ts) >= horizon);
 
   return next;
 }

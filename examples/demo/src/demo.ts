@@ -26,6 +26,7 @@ export interface DemoOptions {
   mock?: boolean;
   x402?: boolean;
   approvals?: boolean;
+  velocity?: boolean;
   /** Stops at the block instead of approving itself, so a person does that step for real. */
   hold?: boolean;
   /** Clears the held log, store and key so the next --hold run starts from nothing. */
@@ -72,7 +73,18 @@ export interface HoldActSummary {
   result: PayResult;
 }
 
-export type DemoSummary = FiveActSummary | X402ActSummary | ApprovalActSummary | HoldActSummary;
+export interface VelocityActSummary {
+  kind: "velocity-act";
+  settled: number;
+  result: PayResult;
+}
+
+export type DemoSummary =
+  | FiveActSummary
+  | X402ActSummary
+  | ApprovalActSummary
+  | HoldActSummary
+  | VelocityActSummary;
 
 type Logger = (line: string) => void;
 
@@ -511,6 +523,42 @@ async function runHoldAct(options: DemoOptions, log: Logger): Promise<HoldActSum
   return { kind: "hold-act", result };
 }
 
+// An eighth, standalone act: a runaway loop settles fast enough to trip the pace cap while the
+// daily budget is nowhere close. Velocity and budget bound different things — how much, and how
+// fast — and this is the one act that shows the second kind of damage on its own.
+async function runVelocityAct(options: DemoOptions, log: Logger): Promise<VelocityActSummary> {
+  const keys = generateKeyPairSync("ed25519");
+  const guard = await createGuard({
+    policy: { ...buildPolicy("api.weather.com"), velocity: [{ window: "10m", maxPayments: 3 }] },
+    adapters: [mockAdapter()],
+    audit: memoryAuditSink(),
+    agent: "weather-agent",
+    logId: "weather-agent-velocity-demo",
+    signingKey: keys.privateKey,
+  });
+
+  log("\n── The velocity act: a runaway loop hits the pace cap ────");
+  log("  cap: 3 payments per 10m — the daily budget alone would allow 50\n");
+
+  let settled = 0;
+  let result: PayResult = await guard.pay({
+    to: "https://api.weather.com/forecast", amount: "0.01", currency: "USDC", reason: "forecast query 1",
+  });
+  for (let i = 2; result.status === "settled" && i <= 10; i += 1) {
+    settled += 1;
+    log(`  ✓ payment ${settled} settled`);
+    result = await guard.pay({
+      to: "https://api.weather.com/forecast", amount: "0.01", currency: "USDC", reason: `forecast query ${i}`,
+    });
+  }
+  if (result.status === "blocked") {
+    log(`  ✗ payment ${settled + 1} BLOCKED  ${result.violation.code} — ${safe(result.violation.message, MESSAGE_MAX)}`);
+    log("      the loop was stopped by pace, with the daily budget still nearly untouched");
+    log("      nothing to fix and nothing to approve: the window slides, and paying resumes");
+  }
+  return { kind: "velocity-act", settled, result };
+}
+
 /** Loads the demo's signing key, creating it on first run and publishing its public half. */
 async function loadOrCreateKey(options: DemoOptions): Promise<KeyObject> {
   const path = options.privateKeyPath;
@@ -542,6 +590,9 @@ export async function runDemo(options: DemoOptions): Promise<DemoSummary> {
   if (options.hold === true) {
     return runHoldAct(options, log);
   }
+  if (options.velocity === true) {
+    return runVelocityAct(options, log);
+  }
   if (options.approvals === true) {
     return runApprovalAct(options, log);
   }
@@ -554,6 +605,7 @@ if (process.argv[1]?.endsWith("demo.ts")) {
     mock: process.argv.includes("--mock"),
     x402: process.argv.includes("--x402"),
     approvals: process.argv.includes("--approvals"),
+    velocity: process.argv.includes("--velocity"),
     hold: process.argv.includes("--hold"),
     reset: process.argv.includes("--reset"),
     // Resolved against this file, not the cwd: `npm run demo` starts in the package while a
@@ -585,6 +637,10 @@ if (process.argv[1]?.endsWith("demo.ts")) {
     }
   } else if (summary.kind === "approval-act") {
     if (summary.result.status !== "settled") {
+      process.exitCode = 1;
+    }
+  } else if (summary.kind === "velocity-act") {
+    if (summary.result.status !== "blocked" || summary.result.violation.code !== "velocity_exceeded") {
       process.exitCode = 1;
     }
   } else if (!summary.verified || !summary.tamperDetected || summary.failed > 0) {

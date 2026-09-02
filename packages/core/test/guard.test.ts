@@ -1430,3 +1430,67 @@ describe("check", () => {
     expect(result.status).toBe("blocked");
   });
 });
+
+describe("velocity through the guard", () => {
+  const vPolicy = { ...policy(), velocity: [{ window: "10m", maxPayments: 2 }] };
+  const req = { to: "https://api.weather.com/f", amount: "0.01", currency: "USDC" as const, reason: "r" };
+
+  it("blocks the payment past the cap, and refusals do not extend the window", async () => {
+    const guard = await makeGuard({ policy: vPolicy });
+    expect((await guard.pay(req)).status).toBe("settled");
+    expect((await guard.pay(req)).status).toBe("settled");
+    const third = await guard.pay(req);
+    expect(third.status).toBe("blocked");
+    if (third.status !== "blocked") throw new Error("expected blocked");
+    expect(third.violation.code).toBe("velocity_exceeded");
+    // Hammering while blocked must not change the answer's cause: still velocity, not worse.
+    for (let i = 0; i < 5; i += 1) {
+      const again = await guard.pay(req);
+      expect(again.status).toBe("blocked");
+      if (again.status !== "blocked") throw new Error("expected blocked");
+      expect(again.violation.code).toBe("velocity_exceeded");
+    }
+  });
+
+  it("survives a restart: a fresh guard over the same log starts blocked", async () => {
+    const sink = memoryAuditSink();
+    const first = await makeGuard({ policy: vPolicy, audit: sink });
+    await first.pay(req);
+    await first.pay(req);
+    await first.flush();
+
+    const second = await makeGuard({ policy: vPolicy, audit: sink });
+    const result = await second.pay(req);
+    expect(result.status).toBe("blocked");
+    if (result.status !== "blocked") throw new Error("expected blocked");
+    expect(result.violation.code).toBe("velocity_exceeded");
+  });
+
+  it("check agrees with pay", async () => {
+    const guard = await makeGuard({ policy: vPolicy });
+    await guard.pay(req);
+    await guard.pay(req);
+    const checked = await guard.check(req);
+    const paid = await guard.pay(req);
+    if (checked.status !== "blocked" || paid.status !== "blocked") throw new Error("expected both blocked");
+    expect(checked.violation.code).toBe(paid.violation.code);
+  });
+
+  it("still fires after a host clock jumps far forward for one payment", async () => {
+    let at = new Date("2026-08-13T12:00:00.000Z");
+    const guard = await makeGuard({ policy: vPolicy, now: () => at });
+
+    // One entry is written with the host clock far ahead — an NTP catch-up after a long-offline
+    // boot, or a VM restored from a snapshot — and its timestamp is signed into the log forever.
+    at = new Date("2099-01-01T00:00:00.000Z");
+    expect((await guard.pay(req)).status).toBe("settled");
+
+    at = new Date("2026-08-13T12:00:00.000Z");
+    expect((await guard.pay(req)).status).toBe("settled");
+
+    const blocked = await guard.pay(req);
+    expect(blocked.status).toBe("blocked");
+    if (blocked.status !== "blocked") throw new Error("expected blocked");
+    expect(blocked.violation.code).toBe("velocity_exceeded");
+  });
+});

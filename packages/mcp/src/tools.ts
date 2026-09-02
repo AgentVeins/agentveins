@@ -32,6 +32,8 @@ const BLOCK_GUIDANCE: Record<ViolationCode, string> = {
     "This is the policy working, not a failure. Choose a cheaper vendor, a smaller amount, or ask a person.",
   vendor_not_allowed:
     "This is the policy working, not a failure. Choose a cheaper vendor, a smaller amount, or ask a person.",
+  velocity_exceeded:
+    "The pace cap was hit, not the budget: too much settled inside a short window. The refusal names the window: wait for it to pass, then continue. A different vendor or a smaller amount does not reset the clock.",
   kill_switch:
     "The kill switch is closed: every payment from this agent is refused until an operator lifts it. No vendor is cheap enough and no amount is small enough. Stop trying to pay and tell a person.",
   audit_unavailable:
@@ -76,7 +78,8 @@ function describeCheck(result: CheckResult, rail: Rail): ToolResult {
   if (result.status === "allowed") {
     return text(`allowed — the policy permits this payment right now.\n\nThis is advisory: a payment made between this check and that one can consume the budget or the approval.${mockNote(rail)}`);
   }
-  return text(`blocked — ${result.violation.code}: ${result.violation.message}${mockNote(rail)}`);
+  const base = `blocked — ${result.violation.code}: ${result.violation.message}`;
+  return text(`${base}\n\n${BLOCK_GUIDANCE[result.violation.code]}${mockNote(rail)}`);
 }
 
 export function toolDefinitions(guard: Guard, rail: Rail): ToolDefinition[] {

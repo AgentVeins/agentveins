@@ -3,6 +3,7 @@ export { createGuard, type Guard, type GuardOptions } from "./guard.js";
 export { validatePolicy } from "./policy.js";
 export { normalizeVendor } from "./vendor.js";
 export { formatAmount, parseAmount, USDC_DECIMALS } from "./money.js";
+export { parseDuration } from "./duration.js";
 export { memoryAuditSink, type MemoryAuditSink } from "./audit/memorySink.js";
 export { memoryApprovalStore, type MemoryApprovalStore } from "./approvals/memoryStore.js";
 export {
@@ -13,10 +14,10 @@ export {
   memoryAnchorStore, sealAnchor, verifyAnchor, type AnchorInput,
 } from "./audit/anchor.js";
 export { CorruptLogError, applyEntry, emptyState, replay, spentInWindow, windowKey } from "./state.js";
-export { CHECKS, allowlistCheck, budgetCheck, killSwitchCheck } from "./checks/index.js";
+export { CHECKS, allowlistCheck, budgetCheck, killSwitchCheck, velocityCheck } from "./checks/index.js";
 export type {
   Anchor, AnchorStore, Approval, ApprovalGrant, ApprovalKey, ApprovalPolicy, ApprovalStore, AuditEntry, AuditKind, AuditOutcome, AuditSink, Budget, BudgetPeriod,
   Check, CheckResult, Currency, KillSwitch, PayRequest, PayResult, PaymentContext, PaymentError,
   PaymentErrorCode, Policy, SettlementReceipt, SettlementRequest, SpendState,
-  UnsignedAuditEntry, VendorPolicy, Violation, ViolationCode, WalletAdapter, WindowState,
+  UnsignedAuditEntry, VelocityRule, VendorPolicy, Violation, ViolationCode, WalletAdapter, WindowState,
 } from "./types.js";
