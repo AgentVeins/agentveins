@@ -188,5 +188,12 @@ describe("tools", () => {
     expect(text).toMatch(/wait/i);
     expect(text).not.toMatch(/cheaper vendor/i);
     expect(text).not.toMatch(/stop trying to pay/i);
+
+    // An agent that sizes a plan with `check` before `pay` needs the same instruction.
+    const checked = await tool(defs, "check").handler(request);
+    const checkedText = checked.content[0]?.text ?? "";
+    expect(checkedText).toContain("velocity_exceeded");
+    expect(checkedText).toMatch(/wait/i);
+    expect(checkedText).not.toMatch(/cheaper vendor/i);
   });
 });

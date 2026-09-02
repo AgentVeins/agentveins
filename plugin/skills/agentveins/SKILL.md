@@ -34,7 +34,7 @@ refused you. What to do depends on which:
 | Refused by | What to do |
 | --- | --- |
 | `budget_exceeded` | Try a smaller amount, or stop and tell the user the budget is spent |
-| `velocity_exceeded` | **Wait.** The pace cap was hit — the detail names the window. Do not switch vendors or shrink the amount; neither resets the clock. Continue after the window passes |
+| `velocity_exceeded` | **Wait.** The pace cap was hit — the refusal names the window. Do not switch vendors or shrink the amount; neither resets the clock. Continue after the window passes |
 | `vendor_not_allowed` | This vendor is not approved. Do not try a different URL for the same vendor — ask the user to add it |
 | `approval_required` | **Stop and tell the user.** A person must approve this exact payment. Retrying will not help; quote the audit id so they can find it |
 | `kill_switch` | **Stop entirely.** The agent is frozen and every payment will be refused. Tell the user |
