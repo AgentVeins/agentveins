@@ -1,7 +1,9 @@
 import { parseAmount } from "./money.js";
+import { parseDuration } from "./duration.js";
 import type { Policy } from "./types.js";
 
 const PERIODS = new Set(["per_tx", "daily"]);
+export const MAX_VELOCITY_WINDOW_MS = 86_400_000;
 
 export function validatePolicy(policy: Policy): void {
   if (policy === null || typeof policy !== "object") {
@@ -57,6 +59,27 @@ export function validatePolicy(policy: Policy): void {
       throw new RangeError("policy.approvals must be an object with an `above` threshold");
     }
     parseAmount(policy.approvals.above);
+  }
+
+  if (policy.velocity !== undefined) {
+    if (!Array.isArray(policy.velocity) || policy.velocity.length === 0) {
+      throw new RangeError("policy.velocity must be a non-empty array of rules; omit it to leave pace ungoverned");
+    }
+    for (const rule of policy.velocity) {
+      if (rule === null || typeof rule !== "object") {
+        throw new RangeError("each velocity rule must be an object");
+      }
+      parseDuration(rule.window, MAX_VELOCITY_WINDOW_MS, "velocity window");
+      if (rule.maxPayments === undefined && rule.maxAmount === undefined) {
+        throw new RangeError("a velocity rule needs maxPayments, maxAmount, or both; one with neither governs nothing");
+      }
+      if (rule.maxPayments !== undefined && (!Number.isInteger(rule.maxPayments) || rule.maxPayments <= 0)) {
+        throw new RangeError(`velocity maxPayments must be a positive integer, received ${String(rule.maxPayments)}`);
+      }
+      if (rule.maxAmount !== undefined && parseAmount(rule.maxAmount) <= 0n) {
+        throw new RangeError("velocity maxAmount must be greater than zero");
+      }
+    }
   }
 
   if (policy.killSwitch === null || typeof policy.killSwitch !== "object" || typeof policy.killSwitch.frozen !== "boolean") {

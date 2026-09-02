@@ -32,6 +32,8 @@ const BLOCK_GUIDANCE: Record<ViolationCode, string> = {
     "This is the policy working, not a failure. Choose a cheaper vendor, a smaller amount, or ask a person.",
   vendor_not_allowed:
     "This is the policy working, not a failure. Choose a cheaper vendor, a smaller amount, or ask a person.",
+  velocity_exceeded:
+    "The pace cap was hit, not the budget: too much settled inside a short window. Wait for the window named in the detail to pass, then continue. A different vendor or a smaller amount does not reset the clock.",
   kill_switch:
     "The kill switch is closed: every payment from this agent is refused until an operator lifts it. No vendor is cheap enough and no amount is small enough. Stop trying to pay and tell a person.",
   audit_unavailable:

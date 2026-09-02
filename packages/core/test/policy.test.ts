@@ -111,3 +111,46 @@ describe("approval policy", () => {
     expect(() => validatePolicy({ ...valid(), approvals: { above: "-1.00" } })).toThrow(/non-negative decimal/);
   });
 });
+
+describe("velocity policy", () => {
+  it("accepts count, amount, and both on one rule", () => {
+    expect(() => validatePolicy({ ...valid(), velocity: [{ window: "10m", maxPayments: 20 }] })).not.toThrow();
+    expect(() => validatePolicy({ ...valid(), velocity: [{ window: "1h", maxAmount: "5.00" }] })).not.toThrow();
+    expect(() =>
+      validatePolicy({ ...valid(), velocity: [{ window: "10m", maxPayments: 20, maxAmount: "5.00" }] }),
+    ).not.toThrow();
+  });
+
+  it("accepts several rules", () => {
+    expect(() =>
+      validatePolicy({
+        ...valid(),
+        velocity: [
+          { window: "10m", maxPayments: 20 },
+          { window: "1h", maxAmount: "5.00" },
+        ],
+      }),
+    ).not.toThrow();
+  });
+
+  it("refuses a rule with neither cap, which would govern nothing", () => {
+    expect(() => validatePolicy({ ...valid(), velocity: [{ window: "10m" }] })).toThrow(RangeError);
+  });
+
+  it("refuses an empty array; omit the field instead", () => {
+    expect(() => validatePolicy({ ...valid(), velocity: [] })).toThrow(RangeError);
+  });
+
+  it("refuses a window over 24h — that is a budget in disguise", () => {
+    expect(() => validatePolicy({ ...valid(), velocity: [{ window: "25h", maxPayments: 5 }] })).toThrow(/24h/);
+    expect(() => validatePolicy({ ...valid(), velocity: [{ window: "24h", maxPayments: 5 }] })).not.toThrow();
+  });
+
+  it("refuses malformed windows and caps", () => {
+    expect(() => validatePolicy({ ...valid(), velocity: [{ window: "soon", maxPayments: 5 }] })).toThrow();
+    expect(() => validatePolicy({ ...valid(), velocity: [{ window: "10m", maxPayments: 0 }] })).toThrow(RangeError);
+    expect(() => validatePolicy({ ...valid(), velocity: [{ window: "10m", maxPayments: 2.5 }] })).toThrow(RangeError);
+    expect(() => validatePolicy({ ...valid(), velocity: [{ window: "10m", maxAmount: "zero" }] })).toThrow();
+    expect(() => validatePolicy({ ...valid(), velocity: [{ window: "10m", maxAmount: "0" }] })).toThrow(RangeError);
+  });
+});

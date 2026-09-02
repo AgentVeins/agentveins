@@ -22,6 +22,16 @@ export interface ApprovalPolicy {
   above: string;
 }
 
+/** A cap on pace: how many payments, or how much money, may settle inside a sliding window. */
+export interface VelocityRule {
+  /** "30s", "10m", "2h" — capped at "24h". Longer is a budget in disguise. */
+  window: string;
+  /** Strictly more than this many settled or uncertain payments in the window is refused. */
+  maxPayments?: number;
+  /** Decimal string; strictly more than this settled or uncertain in the window is refused. */
+  maxAmount?: string;
+}
+
 /** The exact terms a human approved. An approval authorises these terms and nothing else. */
 export interface ApprovalKey {
   agent: string;
@@ -70,6 +80,7 @@ export interface Policy {
    */
   recipients?: RecipientPolicy;
   approvals?: ApprovalPolicy;
+  velocity?: VelocityRule[];
   killSwitch: KillSwitch;
 }
 
@@ -80,7 +91,8 @@ export type ViolationCode =
   | "invalid_request"
   | "audit_unavailable"
   | "approval_required"
-  | "approval_unavailable";
+  | "approval_unavailable"
+  | "velocity_exceeded";
 
 export interface Violation {
   code: ViolationCode;
