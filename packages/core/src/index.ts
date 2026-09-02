@@ -3,6 +3,7 @@ export { createGuard, type Guard, type GuardOptions } from "./guard.js";
 export { validatePolicy } from "./policy.js";
 export { normalizeVendor } from "./vendor.js";
 export { formatAmount, parseAmount, USDC_DECIMALS } from "./money.js";
+export { parseDuration } from "./duration.js";
 export { memoryAuditSink, type MemoryAuditSink } from "./audit/memorySink.js";
 export { memoryApprovalStore, type MemoryApprovalStore } from "./approvals/memoryStore.js";
 export {
