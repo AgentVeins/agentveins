@@ -173,4 +173,20 @@ describe("tools", () => {
 
     expect((JSON.parse(result.content[0]?.text ?? "{}") as { frozen: boolean }).frozen).toBe(true);
   });
+
+  it("tells an agent to wait on a velocity block — not to switch vendors, and not to give up", async () => {
+    const guard = await guardWith({
+      policy: { ...policy, velocity: [{ window: "10m", maxPayments: 1 }] },
+    });
+    const defs = toolDefinitions(guard, "mock");
+    await tool(defs, "pay").handler(request);
+    const result = await tool(defs, "pay").handler(request);
+
+    expect(result.isError).toBeUndefined();
+    const text = result.content[0]?.text ?? "";
+    expect(text).toContain("velocity_exceeded");
+    expect(text).toMatch(/wait/i);
+    expect(text).not.toMatch(/cheaper vendor/i);
+    expect(text).not.toMatch(/stop trying to pay/i);
+  });
 });
