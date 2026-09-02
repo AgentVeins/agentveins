@@ -61,11 +61,33 @@ await guard.freeze(); // emergency stop
 
 ## How it enforces
 
-Checks run in a fixed order, kill switch, then allowlist, then budget, and the first failure stops everything. The order is a security property: a frozen agent paying an unapproved vendor reports `kill_switch`, so you learn the most fundamental reason first.
+Checks run in a fixed order — kill switch, allowlist, budget, then approval — and the first failure stops everything. The order is a security property twice over: a frozen agent paying an unapproved vendor reports `kill_switch`, so you learn the most fundamental reason first, and approval runs last because routing a payment to a person when the budget already forbids it asks them to rule on a decision policy has made.
+
+**The policy is a frozen copy.** `createGuard` takes a deep copy at construction and enforces that, so neither the object you passed in nor `guard.policy` can be edited afterwards to widen a rule. A limit that could be raised without a violation and without an audit entry is not a limit.
 
 **There is no spend counter.** On startup the guard replays the audit log and reconstructs both spend totals and frozen state from it, so restarting an agent cannot reset its budget. The log is not just evidence: it is enforcement.
 
 Money is `bigint` minor units end to end. Limits are decimal strings at the API boundary, parsed once, and `Number` never touches an amount.
+
+## Approvals
+
+Set a threshold and a payment above it is held until a person authorises those exact terms:
+
+```typescript
+approvals: { above: "5.00" }
+```
+
+`pay()` does not wait. It returns `blocked` with `approval_required`, so `PayResult` keeps its three states and one held payment cannot stall the others. An approval binds one agent, one vendor and one exact amount, once, until it expires, and it is consumed *before* the rail — a rail failure burns it and the person is asked again, the same direction the guard already rounds for a settlement it cannot confirm.
+
+Grant one through `ApprovalStore.grant()`, or with [`@agentveins/cli`](https://www.npmjs.com/package/@agentveins/cli). AgentVeins never asks anyone: it records the decision and enforces it, and the audit log is the queue of what is waiting.
+
+## Checking without paying
+
+```typescript
+const verdict = await guard.check({ to, amount, currency, reason });
+```
+
+Answers whether a payment would pass, moving no money, writing no audit entry, consuming no budget and spending no approval. It runs the same admission path `pay()` does rather than a second implementation, so the two agree. Its answer is a snapshot, not a promise — a payment made in between can take the budget.
 
 ## The audit log
 

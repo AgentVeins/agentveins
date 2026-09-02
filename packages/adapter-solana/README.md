@@ -44,7 +44,7 @@ If confirmation times out while the transaction is still plausibly in flight, th
 
 > ⚠️ An agent that retries on a bare `status === "failed"` without reading `error.code` will spend budget twice for one uncertain payment. Check the code.
 
-### `x402`: builds valid payloads, not yet settled live
+### `x402`: settles through a facilitator
 
 Requests the resource, receives a `402` quote, and pays by attaching a signed transaction in an `X-PAYMENT` header. The transaction is built the way the `exact` SVM scheme requires: fee payer taken from the quote's `extra.feePayer` (the **facilitator** pays gas), instructions ordered `[SetComputeUnitLimit, SetComputeUnitPrice, TransferChecked]`, and only *partially* signed so the facilitator can sign slot 0 and broadcast.
 
@@ -53,7 +53,7 @@ Two refusals happen **before anything is signed**:
 - **Price**: the vendor declares the price *after* the guard already approved an amount. A quote asking for more is refused. A cheaper quote pays the cheaper price.
 - **Recipient**: if `policy.recipients` is set, a quote naming a destination you did not approve is refused. Without it, a compromised or DNS-hijacked endpoint can redirect the payment and every record still reads as a normal governed payment.
 
-**Status, precisely:** the transaction is accepted by the shipped `ExactSvmSchemeV1.verify()` from `@x402/svm`, run offline as a test. **Nothing has been settled against a live facilitator on devnet yet.**
+**Status, precisely:** this settles real USDC on devnet. The facilitator is x402's own reference implementation run in process, not a hosted third party, so settlement against someone else's facilitator remains untested. On a settled transaction the agent's SOL balance does not move — the facilitator pays the fee — which is the split the scheme depends on and the thing worth checking on an explorer.
 
 ## Scope
 
