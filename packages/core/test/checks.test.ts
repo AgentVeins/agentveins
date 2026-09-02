@@ -168,7 +168,10 @@ describe("velocityCheck", () => {
     expect(violation?.detail?.["window"]).toBe("10m");
   });
 
-  it("over-counts under a backward clock rather than under-counting", () => {
+  // Over-counting is bounded by what the state still holds: `recent` retains only the last 24h
+  // measured from each entry as it was applied, so a clock far enough behind can reach past the
+  // oldest entry the state kept. Within retention the direction is always "blocks more".
+  it("over-counts under a backward clock, within what the state retains", () => {
     const violation = velocityCheck(
       ctx({ now: new Date(now.getTime() - 5 * 60_000) }),
       vPolicy,
