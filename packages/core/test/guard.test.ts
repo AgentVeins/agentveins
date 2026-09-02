@@ -1447,6 +1447,8 @@ describe("velocity through the guard", () => {
     for (let i = 0; i < 5; i += 1) {
       const again = await guard.pay(req);
       expect(again.status).toBe("blocked");
+      if (again.status !== "blocked") throw new Error("expected blocked");
+      expect(again.violation.code).toBe("velocity_exceeded");
     }
   });
 

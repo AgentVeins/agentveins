@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { CHECKS, allowlistCheck, budgetCheck, killSwitchCheck, velocityCheck } from "../src/checks/index.js";
 import { emptyState } from "../src/state.js";
-import type { PaymentContext, Policy, SpendState } from "../src/types.js";
+import type { PaymentContext, Policy, SpendState, Violation } from "../src/types.js";
 
 const policy: Policy = {
   budgets: [
@@ -172,12 +172,22 @@ describe("velocityCheck", () => {
     const violation = velocityCheck(
       ctx({ now: new Date(now.getTime() - 5 * 60_000) }),
       vPolicy,
-      stateWith([inWindow(6), inWindow(7)]),
+      stateWith([inWindow(2), inWindow(3)]),
     );
     expect(violation?.code).toBe("velocity_exceeded");
   });
 
   it("runs last in CHECKS", () => {
     expect(CHECKS[CHECKS.length - 1]).toBe(velocityCheck);
+  });
+
+  it("reports budget, not velocity, when a payment would exceed both", () => {
+    const state = stateWith([inWindow(1), inWindow(2)]);
+    let violation: Violation | null = null;
+    for (const check of CHECKS) {
+      violation = check(ctx({ amountMinor: 150_000n }), vPolicy, state);
+      if (violation !== null) break;
+    }
+    expect(violation?.code).toBe("budget_exceeded");
   });
 });
