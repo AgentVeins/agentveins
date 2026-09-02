@@ -1,3 +1,4 @@
+import { MAX_VELOCITY_WINDOW_MS } from "./policy.js";
 import type { AuditEntry, BudgetPeriod, Policy, SpendState } from "./types.js";
 
 const AMOUNT_MINOR_PATTERN = /^\d+$/;
@@ -24,7 +25,7 @@ export function windowKey(period: BudgetPeriod, now: Date): string {
 }
 
 export function emptyState(policy: Policy): SpendState {
-  return { frozen: policy.killSwitch.frozen, windows: {}, seq: 0, prevHash: "" };
+  return { frozen: policy.killSwitch.frozen, windows: {}, recent: [], seq: 0, prevHash: "" };
 }
 
 export function spentInWindow(state: SpendState, period: BudgetPeriod, now: Date): bigint {
@@ -38,6 +39,7 @@ export function applyEntry(state: SpendState, entry: AuditEntry): SpendState {
   const next: SpendState = {
     frozen: state.frozen,
     windows: { ...state.windows },
+    recent: [...state.recent],
     seq: state.seq + 1,
     prevHash: entry.hash,
   };
@@ -77,6 +79,20 @@ export function applyEntry(state: SpendState, entry: AuditEntry): SpendState {
     start: utcDay(parsedTs),
     spentMinor: current === undefined ? amount : current.spentMinor + amount,
   };
+
+  // The velocity horizon. Pruned against the newest entry seen rather than the wall clock, so
+  // replay stays a pure fold: two replays of one log always produce one state. An out-of-order
+  // older entry can therefore never evict newer ones — the horizon only moves forward.
+  next.recent.push({ ts: entry.ts, amountMinor: amount });
+  let newestMs = 0;
+  for (const item of next.recent) {
+    const ms = Date.parse(item.ts);
+    if (ms > newestMs) {
+      newestMs = ms;
+    }
+  }
+  const horizon = newestMs - MAX_VELOCITY_WINDOW_MS;
+  next.recent = next.recent.filter((item) => Date.parse(item.ts) >= horizon);
 
   return next;
 }

@@ -136,7 +136,13 @@ function snapshot(state: SpendState): SpendState {
   for (const [key, window] of Object.entries(state.windows)) {
     windows[key] = { ...window };
   }
-  return { frozen: state.frozen, windows, seq: state.seq, prevHash: state.prevHash };
+  return {
+    frozen: state.frozen,
+    windows,
+    recent: state.recent.map((item) => ({ ...item })),
+    seq: state.seq,
+    prevHash: state.prevHash,
+  };
 }
 
 export async function createGuard(options: GuardOptions): Promise<Guard> {

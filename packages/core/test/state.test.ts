@@ -175,3 +175,48 @@ describe("replay", () => {
     expect(state.prevHash).toBe("h-2");
   });
 });
+
+describe("recent payments", () => {
+  it("records a settled entry's time and amount", () => {
+    const next = applyEntry(emptyState(policy), payment(0, "2026-09-02T10:00:00.000Z", "50000", "settled"));
+    expect(next.recent).toEqual([{ ts: "2026-09-02T10:00:00.000Z", amountMinor: 50_000n }]);
+  });
+
+  it("records uncertain, which consumes budget, and ignores blocked and failed, which do not", () => {
+    let state = emptyState(policy);
+    state = applyEntry(state, payment(0, "2026-08-13T10:00:00.000Z", "50000", "uncertain"));
+    state = applyEntry(state, payment(1, "2026-08-13T10:01:00.000Z", "50000", "blocked"));
+    state = applyEntry(state, payment(2, "2026-08-13T10:02:00.000Z", "50000", "failed"));
+    expect(state.recent).toHaveLength(1);
+  });
+
+  it("prunes entries older than 24h before the newest entry, not before the wall clock", () => {
+    let state = emptyState(policy);
+    state = applyEntry(state, payment(0, "2026-09-01T09:00:00.000Z", "50000", "settled"));
+    state = applyEntry(state, payment(1, "2026-09-02T10:00:00.000Z", "50000", "settled"));
+    expect(state.recent.map((r) => r.ts)).toEqual(["2026-09-02T10:00:00.000Z"]);
+  });
+
+  it("keeps an entry aged exactly 24h at the boundary", () => {
+    let state = emptyState(policy);
+    state = applyEntry(state, payment(0, "2026-09-01T10:00:00.000Z", "50000", "settled"));
+    state = applyEntry(state, payment(1, "2026-09-02T10:00:00.000Z", "50000", "settled"));
+    expect(state.recent).toHaveLength(2);
+  });
+
+  it("does not let an out-of-order older entry evict newer ones", () => {
+    let state = applyEntry(emptyState(policy), payment(0, "2026-09-02T10:00:00.000Z", "50000", "settled"));
+    state = applyEntry(state, payment(1, "2026-09-02T09:00:00.000Z", "50000", "settled"));
+    expect(state.recent).toHaveLength(2);
+  });
+
+  it("replays deterministically: same log, same recent list", async () => {
+    const entries = [
+      payment(0, "2026-09-02T10:00:00.000Z", "50000", "settled"),
+      payment(1, "2026-09-02T10:01:00.000Z", "50000", "settled"),
+    ];
+    const a = await replay(policy, entries);
+    const b = await replay(policy, entries);
+    expect(a.recent).toEqual(b.recent);
+  });
+});

@@ -213,6 +213,11 @@ export interface SpendState {
    * Every day keeps its own total, so a clock that jumps forward and back never hides spend.
    */
   windows: Record<string, WindowState>;
+  /**
+   * Settled and uncertain payments from the last 24 hours (measured against the newest entry,
+   * never the wall clock), oldest first. What velocity rules are answered from.
+   */
+  recent: Array<{ ts: string; amountMinor: bigint }>;
   seq: number;
   prevHash: string;
 }
