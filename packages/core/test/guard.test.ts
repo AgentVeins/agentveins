@@ -1430,3 +1430,47 @@ describe("check", () => {
     expect(result.status).toBe("blocked");
   });
 });
+
+describe("velocity through the guard", () => {
+  const vPolicy = { ...policy(), velocity: [{ window: "10m", maxPayments: 2 }] };
+  const req = { to: "https://api.weather.com/f", amount: "0.01", currency: "USDC" as const, reason: "r" };
+
+  it("blocks the payment past the cap, and refusals do not extend the window", async () => {
+    const guard = await makeGuard({ policy: vPolicy });
+    expect((await guard.pay(req)).status).toBe("settled");
+    expect((await guard.pay(req)).status).toBe("settled");
+    const third = await guard.pay(req);
+    expect(third.status).toBe("blocked");
+    if (third.status !== "blocked") throw new Error("expected blocked");
+    expect(third.violation.code).toBe("velocity_exceeded");
+    // Hammering while blocked must not change the answer's cause: still velocity, not worse.
+    for (let i = 0; i < 5; i += 1) {
+      const again = await guard.pay(req);
+      expect(again.status).toBe("blocked");
+    }
+  });
+
+  it("survives a restart: a fresh guard over the same log starts blocked", async () => {
+    const sink = memoryAuditSink();
+    const first = await makeGuard({ policy: vPolicy, audit: sink });
+    await first.pay(req);
+    await first.pay(req);
+    await first.flush();
+
+    const second = await makeGuard({ policy: vPolicy, audit: sink });
+    const result = await second.pay(req);
+    expect(result.status).toBe("blocked");
+    if (result.status !== "blocked") throw new Error("expected blocked");
+    expect(result.violation.code).toBe("velocity_exceeded");
+  });
+
+  it("check agrees with pay", async () => {
+    const guard = await makeGuard({ policy: vPolicy });
+    await guard.pay(req);
+    await guard.pay(req);
+    const checked = await guard.check(req);
+    const paid = await guard.pay(req);
+    if (checked.status !== "blocked" || paid.status !== "blocked") throw new Error("expected both blocked");
+    expect(checked.violation.code).toBe(paid.violation.code);
+  });
+});

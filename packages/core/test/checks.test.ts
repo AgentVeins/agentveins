@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CHECKS, allowlistCheck, budgetCheck, killSwitchCheck } from "../src/checks/index.js";
+import { CHECKS, allowlistCheck, budgetCheck, killSwitchCheck, velocityCheck } from "../src/checks/index.js";
 import { emptyState } from "../src/state.js";
 import type { PaymentContext, Policy, SpendState } from "../src/types.js";
 
@@ -99,13 +99,85 @@ describe("CHECKS ordering", () => {
     expect(first?.code).toBe("vendor_not_allowed");
   });
 
-  it("contains exactly killSwitchCheck, allowlistCheck, budgetCheck in that order", () => {
-    expect(CHECKS).toEqual([killSwitchCheck, allowlistCheck, budgetCheck]);
+  it("contains exactly killSwitchCheck, allowlistCheck, budgetCheck, velocityCheck in that order", () => {
+    expect(CHECKS).toEqual([killSwitchCheck, allowlistCheck, budgetCheck, velocityCheck]);
   });
 
   it("reports budget_exceeded when it is the only rule that fires", () => {
     const overBudget = ctx({ amountMinor: 250_000n });
     const first = CHECKS.map((check) => check(overBudget, policy, emptyState(policy))).find((v) => v !== null);
     expect(first?.code).toBe("budget_exceeded");
+  });
+});
+
+describe("velocityCheck", () => {
+  const vPolicy: Policy = { ...policy, velocity: [{ window: "10m", maxPayments: 2, maxAmount: "0.20" }] };
+
+  function stateWith(recent: Array<{ ts: string; amountMinor: bigint }>): SpendState {
+    return { ...emptyState(vPolicy), recent };
+  }
+
+  const inWindow = (minutesAgo: number, amountMinor = 50_000n) => ({
+    ts: new Date(now.getTime() - minutesAgo * 60_000).toISOString(),
+    amountMinor,
+  });
+
+  it("passes when the policy has no velocity rules", () => {
+    expect(velocityCheck(ctx(), policy, emptyState(policy))).toBeNull();
+  });
+
+  it("permits the payment that lands exactly on the count cap", () => {
+    expect(velocityCheck(ctx(), vPolicy, stateWith([inWindow(1)]))).toBeNull();
+  });
+
+  it("blocks the payment that would exceed the count cap", () => {
+    const violation = velocityCheck(ctx(), vPolicy, stateWith([inWindow(1), inWindow(2)]));
+    expect(violation?.code).toBe("velocity_exceeded");
+    expect(violation?.detail?.["window"]).toBe("10m");
+  });
+
+  it("stops counting an entry once it slides out of the window", () => {
+    expect(velocityCheck(ctx(), vPolicy, stateWith([inWindow(1), inWindow(11)]))).toBeNull();
+  });
+
+  it("treats an entry aged exactly one window as gone", () => {
+    expect(velocityCheck(ctx(), vPolicy, stateWith([inWindow(1), inWindow(10)]))).toBeNull();
+  });
+
+  it("permits an amount landing exactly on the cap and blocks one minor unit over", () => {
+    expect(velocityCheck(ctx({ amountMinor: 150_000n }), vPolicy, stateWith([inWindow(1)]))).toBeNull();
+    const violation = velocityCheck(ctx({ amountMinor: 150_001n }), vPolicy, stateWith([inWindow(1)]));
+    expect(violation?.code).toBe("velocity_exceeded");
+  });
+
+  it("counts the candidate payment itself toward the amount cap", () => {
+    const state = stateWith([inWindow(1, 199_000n)]);
+    expect(velocityCheck(ctx({ amountMinor: 2_000n }), vPolicy, state)?.code).toBe("velocity_exceeded");
+  });
+
+  it("evaluates every rule and the strictest binds", () => {
+    const two: Policy = {
+      ...policy,
+      velocity: [
+        { window: "1h", maxAmount: "100.00" },
+        { window: "10m", maxPayments: 1 },
+      ],
+    };
+    const violation = velocityCheck(ctx(), two, stateWith([inWindow(1)]));
+    expect(violation?.code).toBe("velocity_exceeded");
+    expect(violation?.detail?.["window"]).toBe("10m");
+  });
+
+  it("over-counts under a backward clock rather than under-counting", () => {
+    const violation = velocityCheck(
+      ctx({ now: new Date(now.getTime() - 5 * 60_000) }),
+      vPolicy,
+      stateWith([inWindow(6), inWindow(7)]),
+    );
+    expect(violation?.code).toBe("velocity_exceeded");
+  });
+
+  it("runs last in CHECKS", () => {
+    expect(CHECKS[CHECKS.length - 1]).toBe(velocityCheck);
   });
 });
