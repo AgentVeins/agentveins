@@ -51,6 +51,15 @@ describe("runDemo", () => {
     }
     expect(summary.result.status).toBe("settled");
   });
+
+  it("settles to the pace cap, then blocks with velocity", async () => {
+    const summary = await runDemo({ velocity: true, quiet: true });
+    if (summary.kind !== "velocity-act") throw new Error("expected the velocity act");
+    expect(summary.result.status).toBe("blocked");
+    if (summary.result.status !== "blocked") throw new Error("expected blocked");
+    expect(summary.result.violation.code).toBe("velocity_exceeded");
+    expect(summary.settled).toBe(3);
+  });
 });
 
 // I1: the demo printed violation.message straight to stdout, so an ANSI erase-line reaching the
