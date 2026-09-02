@@ -5,7 +5,7 @@ import type { Rail } from "./rail.js";
 import { toolDefinitions } from "./tools.js";
 
 export const SERVER_NAME = "agentveins";
-export const SERVER_VERSION = "0.6.0";
+export const SERVER_VERSION = "0.7.0";
 
 /** Builds the server without connecting it, so tests can drive it over an in-memory pair. */
 export function buildServer(guard: Guard, rail: Rail): McpServer {
