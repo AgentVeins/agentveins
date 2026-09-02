@@ -57,11 +57,11 @@ await guard.freeze(); // emergency stop
 
 **A refused payment never reaches an adapter**: the guard returns before any network call, so nothing is built, signed, or broadcast.
 
-`blocked` means policy said no (`kill_switch`, `vendor_not_allowed`, `budget_exceeded`, `invalid_request`, `audit_unavailable`); retrying will fail the same way. `failed` means the rail failed, not the policy. Policy denial **never throws**: only invalid configuration does, at construction.
+`blocked` means policy said no (`kill_switch`, `vendor_not_allowed`, `budget_exceeded`, `velocity_exceeded`, `invalid_request`, `audit_unavailable`); retrying will fail the same way, except `velocity_exceeded`, which clears on its own as the window slides. `failed` means the rail failed, not the policy. Policy denial **never throws**: only invalid configuration does, at construction.
 
 ## How it enforces
 
-Checks run in a fixed order — kill switch, allowlist, budget, then approval — and the first failure stops everything. The order is a security property twice over: a frozen agent paying an unapproved vendor reports `kill_switch`, so you learn the most fundamental reason first, and approval runs last because routing a payment to a person when the budget already forbids it asks them to rule on a decision policy has made.
+Checks run in a fixed order — kill switch, allowlist, budget, velocity, then approval — and the first failure stops everything. The order is a security property twice over: a frozen agent paying an unapproved vendor reports `kill_switch`, so you learn the most fundamental reason first, and approval runs last because routing a payment to a person when the budget already forbids it asks them to rule on a decision policy has made.
 
 **The policy is a frozen copy.** `createGuard` takes a deep copy at construction and enforces that, so neither the object you passed in nor `guard.policy` can be edited afterwards to widen a rule. A limit that could be raised without a violation and without an audit entry is not a limit.
 
@@ -80,6 +80,22 @@ approvals: { above: "5.00" }
 `pay()` does not wait. It returns `blocked` with `approval_required`, so `PayResult` keeps its three states and one held payment cannot stall the others. An approval binds one agent, one vendor and one exact amount, once, until it expires, and it is consumed *before* the rail — a rail failure burns it and the person is asked again, the same direction the guard already rounds for a settlement it cannot confirm.
 
 Grant one through `ApprovalStore.grant()`, or with [`@agentveins/cli`](https://www.npmjs.com/package/@agentveins/cli). AgentVeins never asks anyone: it records the decision and enforces it, and the audit log is the queue of what is waiting.
+
+## Velocity
+
+The daily budget bounds the damage; velocity bounds the pace:
+
+```typescript
+velocity: [
+  { window: "10m", maxPayments: 20 },
+  { window: "1h",  maxAmount: "5.00" }
+]
+```
+
+Only money that moved counts — refusals never extend a window, so the guard's own blocks
+cannot spiral into a lockout longer than the window itself. The window is rebuilt from the
+audit log on startup, so a restart cannot reset it, and a velocity block clears on its own
+as the window slides: the one refusal that does.
 
 ## Checking without paying
 

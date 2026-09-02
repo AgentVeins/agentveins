@@ -76,6 +76,7 @@ const policy: Policy = {
   recipients: { mode: "allowlist", entries: ["9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"] },
   killSwitch: { frozen: false },
   approvals: { above: "5.00" },      // above this, a human must approve
+  velocity: [{ window: "10m", maxPayments: 20 }], // pace cap: a runaway loop trips this first
 };
 
 const guard = await createGuard({
