@@ -41,10 +41,12 @@ refused you. What to do depends on which:
 | `audit_unavailable` | **Stop entirely.** The guard cannot record, so it will not authorise. Tell the user |
 | `approval_unavailable` | The approval store could not be read. Tell the user; a different amount will not help |
 
-Three refusals mean stop entirely, and one means wait. A frozen or latched guard refuses
-everything, so walking down the vendor list just produces a long row of refusals in the
-audit log. A velocity block clears on its own — the only refusal that does — so waiting is
-the correct move and the only one that works.
+Two refusals stop everything: a frozen guard and a latched one refuse every payment, so
+walking down the vendor list just produces a long row of refusals in the audit log — stop
+and tell the user. One stops a single payment: `approval_required` parks that payment until
+a person decides, and other work continues. And one means wait: a velocity block clears on
+its own — the only refusal that does — so waiting is the correct move and the only one that
+works.
 
 ## Writing a good reason
 
