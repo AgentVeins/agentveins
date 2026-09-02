@@ -80,18 +80,17 @@ export function applyEntry(state: SpendState, entry: AuditEntry): SpendState {
     spentMinor: current === undefined ? amount : current.spentMinor + amount,
   };
 
-  // The velocity horizon. Pruned against the newest entry seen rather than the wall clock, so
-  // replay stays a pure fold: two replays of one log always produce one state. An out-of-order
-  // older entry can therefore never evict newer ones — the horizon only moves forward.
+  // The velocity horizon. Pruned against the entry's own timestamp rather than the wall clock,
+  // so replay stays a pure fold: two replays of one log always produce one state.
   next.recent.push({ ts: entry.ts, amountMinor: amount });
-  let newestMs = 0;
-  for (const item of next.recent) {
-    const ms = Date.parse(item.ts);
-    if (ms > newestMs) {
-      newestMs = ms;
-    }
-  }
-  const horizon = newestMs - MAX_VELOCITY_WINDOW_MS;
+  // Pruned against the entry being applied, never the max over the list: a max is monotone,
+  // so one future-dated timestamp — a host clock jumping forward during a single payment —
+  // would pin the horizon forever and silently disable velocity for good. Keyed this way, an
+  // out-of-order older entry moves the horizon back and evicts nothing newer; a future-dated
+  // one evicts history once, then every later real entry prunes against its own real time and
+  // the window rebuilds. The poison lingers and over-counts — which blocks more, the direction
+  // this guard always rounds — instead of failing open.
+  const horizon = parsedTs.getTime() - MAX_VELOCITY_WINDOW_MS;
   next.recent = next.recent.filter((item) => Date.parse(item.ts) >= horizon);
 
   return next;

@@ -190,7 +190,7 @@ describe("recent payments", () => {
     expect(state.recent).toHaveLength(1);
   });
 
-  it("prunes entries older than 24h before the newest entry, not before the wall clock", () => {
+  it("prunes entries older than 24h before the entry being applied, not before the wall clock", () => {
     let state = emptyState(policy);
     state = applyEntry(state, payment(0, "2026-09-01T09:00:00.000Z", "50000", "settled"));
     state = applyEntry(state, payment(1, "2026-09-02T10:00:00.000Z", "50000", "settled"));
@@ -208,6 +208,16 @@ describe("recent payments", () => {
     let state = applyEntry(emptyState(policy), payment(0, "2026-09-02T10:00:00.000Z", "50000", "settled"));
     state = applyEntry(state, payment(1, "2026-09-02T09:00:00.000Z", "50000", "settled"));
     expect(state.recent).toHaveLength(2);
+  });
+
+  it("recovers from a future-dated entry instead of letting it disable the window", () => {
+    let state = applyEntry(emptyState(policy), payment(0, "2099-01-01T00:00:00.000Z", "50000", "settled"));
+    state = applyEntry(state, payment(1, "2026-09-02T10:00:00.000Z", "50000", "settled"));
+    state = applyEntry(state, payment(2, "2026-09-02T10:01:00.000Z", "50000", "settled"));
+
+    const times = state.recent.map((r) => r.ts);
+    expect(times).toContain("2026-09-02T10:00:00.000Z");
+    expect(times).toContain("2026-09-02T10:01:00.000Z");
   });
 
   it("replays deterministically: same log, same recent list", async () => {

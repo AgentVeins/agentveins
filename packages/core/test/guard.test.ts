@@ -1475,4 +1475,22 @@ describe("velocity through the guard", () => {
     if (checked.status !== "blocked" || paid.status !== "blocked") throw new Error("expected both blocked");
     expect(checked.violation.code).toBe(paid.violation.code);
   });
+
+  it("still fires after a host clock jumps far forward for one payment", async () => {
+    let at = new Date("2026-08-13T12:00:00.000Z");
+    const guard = await makeGuard({ policy: vPolicy, now: () => at });
+
+    // One entry is written with the host clock far ahead — an NTP catch-up after a long-offline
+    // boot, or a VM restored from a snapshot — and its timestamp is signed into the log forever.
+    at = new Date("2099-01-01T00:00:00.000Z");
+    expect((await guard.pay(req)).status).toBe("settled");
+
+    at = new Date("2026-08-13T12:00:00.000Z");
+    expect((await guard.pay(req)).status).toBe("settled");
+
+    const blocked = await guard.pay(req);
+    expect(blocked.status).toBe("blocked");
+    if (blocked.status !== "blocked") throw new Error("expected blocked");
+    expect(blocked.violation.code).toBe("velocity_exceeded");
+  });
 });
