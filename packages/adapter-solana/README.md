@@ -40,9 +40,11 @@ Builds an SPL USDC transfer, signs it, submits it, and **waits for confirmation*
 
 Confirmation is not a detail. `sendTransaction` returns when a node *accepts* a transaction, which is not the same as it landing: blockhash expiry and congestion drops are ordinary on Solana. Returning success at acceptance would record a settlement for money that never moved and burn budget permanently, with no way to reverse it.
 
-If confirmation times out while the transaction is still plausibly in flight, the guard records an `uncertain` audit entry carrying the signature and **consumes the budget**, while returning `failed` with `error.code: "timeout"` and `error.txSig`. Rounding against the agent means the count can never come in low.
+When a transaction has been broadcast and the adapter cannot establish what became of it, the guard records an `uncertain` audit entry carrying the signature and **consumes the budget**, while returning `failed` with `error.txSig` set. Rounding against the agent means the count can never come in low.
 
-> ⚠️ An agent that retries on a bare `status === "failed"` without reading `error.code` will spend budget twice for one uncertain payment. Check the code.
+Two things produce that state, and the distinction is not one an agent needs to make: confirmation timing out while the transaction is still plausibly in flight (`error.code: "timeout"`), and the rpc call *itself* failing — a rate limit, a dropped socket — so that no ruling could be read at all (`error.code: "adapter_error"`). Failing to look at a broadcast transaction is not evidence it did not happen. A cluster that actually ruled is different: a rejection or an expired blockhash is a definite non-event, sets no signature, and consumes nothing.
+
+> ⚠️ An agent that retries on a bare `status === "failed"` will spend budget twice for one uncertain payment. **Check `error.txSig`**: its presence means the money may already have moved, whatever the code says. Reconcile that signature before sending again.
 
 ### `x402`: settles through a facilitator
 

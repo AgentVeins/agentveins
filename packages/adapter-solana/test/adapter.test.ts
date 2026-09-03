@@ -216,6 +216,73 @@ describe("solanaAdapter", () => {
     expect(getSignatureStatus).toHaveBeenCalledTimes(1);
   });
 
+  // Found on devnet: the public rpc rate-limited the status poll, the raw 429 propagated with no
+  // signature, and the guard recorded `failed` — consuming no budget — for eight transfers that
+  // had all landed. Failing to look at a broadcast transaction is not evidence it did not happen.
+  it("reports a broadcast transaction as unconfirmed when the status poll itself fails", async () => {
+    const adapter = solanaAdapter({
+      ...config,
+      mode: "direct",
+      pollIntervalMs: 0,
+      buildSignedTransfer: buildSpy(),
+      sendTransaction: vi.fn(async () => "sig-abc"),
+      getSignatureStatus: vi.fn(async () => {
+        throw new Error("HTTP error (429): Too Many Requests");
+      }),
+      getBlockHeight: vi.fn(async () => 99n),
+    });
+
+    const error = (await adapter
+      .execute({ to: "addr", amountMinor: 50_000n, reason: "forecast" })
+      .catch((caught: unknown) => caught)) as TransactionNotConfirmedError & {
+      unconfirmedSignature?: string;
+    };
+
+    expect(error).toBeInstanceOf(TransactionNotConfirmedError);
+    expect(error.unconfirmedSignature).toBe("sig-abc");
+    expect(error.message).toMatch(/429/);
+  });
+
+  it("reports it as unconfirmed when the block-height check fails after broadcast", async () => {
+    const adapter = solanaAdapter({
+      ...config,
+      mode: "direct",
+      pollIntervalMs: 0,
+      buildSignedTransfer: buildSpy(),
+      sendTransaction: vi.fn(async () => "sig-abc"),
+      getSignatureStatus: vi.fn(async () => null),
+      getBlockHeight: vi.fn(async () => {
+        throw new Error("HTTP error (429): Too Many Requests");
+      }),
+    });
+
+    const error = (await adapter
+      .execute({ to: "addr", amountMinor: 50_000n, reason: "forecast" })
+      .catch((caught: unknown) => caught)) as { unconfirmedSignature?: string };
+
+    expect(error.unconfirmedSignature).toBe("sig-abc");
+  });
+
+  // The counterpart: a cluster that ruled is a definite non-event and must NOT set the field,
+  // or every rejection would consume budget for money that never moved.
+  it("still omits the signature when the cluster itself rejected the transaction", async () => {
+    const adapter = solanaAdapter({
+      ...config,
+      mode: "direct",
+      pollIntervalMs: 0,
+      buildSignedTransfer: buildSpy(),
+      sendTransaction: vi.fn(async () => "sig-abc"),
+      getSignatureStatus: vi.fn(async () => ({ confirmationStatus: null, err: { InstructionError: [0, "X"] } })),
+      getBlockHeight: vi.fn(async () => 99n),
+    });
+
+    const error = (await adapter
+      .execute({ to: "addr", amountMinor: 50_000n, reason: "forecast" })
+      .catch((caught: unknown) => caught)) as { unconfirmedSignature?: string };
+
+    expect(error.unconfirmedSignature).toBeUndefined();
+  });
+
   it("pays a vendor's 402 quote in x402 mode without submitting to the rpc itself", async () => {
     const buildX402 = vi.fn(async () => x402Transfer);
     const send = vi.fn();

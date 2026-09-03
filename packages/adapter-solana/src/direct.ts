@@ -67,22 +67,50 @@ export class TransactionNotConfirmedError extends Error {
 }
 
 /**
- * The cluster never ruled on this transaction, so it may still land. `unconfirmedSignature` is
- * the guard's cue to record the attempt as spent-but-unproven rather than as a clean failure;
- * a rejection or an expired blockhash is a definite non-event and deliberately omits it.
+ * The transaction was broadcast and the cluster never ruled on it, so it may still land.
+ * `unconfirmedSignature` is the guard's cue to record the attempt as spent-but-unproven rather
+ * than as a clean failure; a rejection or an expired blockhash is a definite non-event and
+ * deliberately omits it.
+ *
+ * Failing to *look* belongs here too. A rate-limited or unreachable rpc tells us nothing about
+ * where the money went, and reporting that as a clean failure is how a governor comes to
+ * believe it spent less than it did.
  */
-export class ConfirmationTimeoutError extends TransactionNotConfirmedError {
-  readonly code = "timeout";
+export class ConfirmationUnknownError extends TransactionNotConfirmedError {
   readonly unconfirmedSignature: string;
 
-  constructor(signature: string, detail: string) {
-    super(signature, detail);
-    this.name = "ConfirmationTimeoutError";
+  constructor(signature: string, detail: string, options?: ErrorOptions) {
+    super(signature, detail, options);
+    this.name = "ConfirmationUnknownError";
     this.unconfirmedSignature = signature;
   }
 }
 
+/** The cluster stayed silent until the deadline. A timeout is one way not to know. */
+export class ConfirmationTimeoutError extends ConfirmationUnknownError {
+  readonly code = "timeout";
+
+  constructor(signature: string, detail: string) {
+    super(signature, detail);
+    this.name = "ConfirmationTimeoutError";
+  }
+}
+
 const DEADLINE = Symbol("deadline");
+
+/**
+ * Runs one rpc call on behalf of a transaction already on the wire. Any rejection — a 429, a
+ * dropped socket, a synchronous throw before the promise exists — becomes an unknown outcome
+ * carrying the signature, never a clean failure: we are asking about money that has already left.
+ */
+async function observe<T>(work: () => Promise<T>, signature: string, what: string): Promise<T> {
+  try {
+    return await work();
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new ConfirmationUnknownError(signature, `${what} failed: ${detail}`, { cause: error });
+  }
+}
 
 // Bounds one rpc call, not just the gap between calls: a socket that never answers would
 // otherwise hold the loop open past every attempt and wall-clock ceiling below.
@@ -122,7 +150,11 @@ export async function confirmSignature(
       throw expired(`the cluster did not confirm it within ${timeoutMs}ms`);
     }
 
-    const status = await withinDeadline(deps.getSignatureStatus(signature), remaining());
+    const status = await observe(
+      () => withinDeadline(deps.getSignatureStatus(signature), remaining()),
+      signature,
+      "the status check",
+    );
     if (status === DEADLINE) {
       throw expired(`the cluster did not confirm it within ${timeoutMs}ms`);
     }
@@ -146,7 +178,11 @@ export async function confirmSignature(
       if (remaining() <= 0) {
         throw expired(`the cluster did not confirm it within ${timeoutMs}ms`);
       }
-      const blockHeight = await withinDeadline(deps.getBlockHeight(), remaining());
+      const blockHeight = await observe(
+        () => withinDeadline(deps.getBlockHeight(), remaining()),
+        signature,
+        "the block-height check",
+      );
       if (blockHeight === DEADLINE) {
         throw expired(`the cluster did not confirm it within ${timeoutMs}ms`);
       }

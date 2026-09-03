@@ -121,6 +121,7 @@ export type {
 } from "./transfer.js";
 export {
   ConfirmationTimeoutError,
+  ConfirmationUnknownError,
   DEFAULT_CONFIRM_MAX_ATTEMPTS,
   DEFAULT_CONFIRM_TIMEOUT_MS,
   TransactionNotConfirmedError,
