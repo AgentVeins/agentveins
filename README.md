@@ -331,12 +331,21 @@ It sits between your agent and its money. Every wallet, rail, and framework is a
 
 - [x] Policy engine: budgets, allowlist, kill switch
 - [x] Solana devnet payment path (x402): **settled**, not merely verified — [`43ctpPA1…FmNte`](https://explorer.solana.com/tx/43ctpPA1RDqyoPoaTaJXngbot7TowVbUX6SQpmH9z5UQjT92AGFNA7kxasf4HTUVgaPHGL78gVdTvPLmn24FmNte?cluster=devnet) moved 0.01 USDC on devnet with the agent signing the transfer and the facilitator paying the fee. The facilitator is x402's reference implementation run in-process (`examples/demo/src/facilitator.ts`), not a hosted third party; settlement against someone else's facilitator is untested
-- [x] Signed audit log
+- [x] Signed audit log: hash-chained, Ed25519-signed JSONL, with an out-of-band anchor so a truncated log is caught too
 - [x] Approval workflows: a threshold above which a human must approve, bound to exact terms and spent on use
-- [ ] Base adapter
 - [x] Velocity rules: caps on payments and amount per sliding window, rebuilt from the log so a restart cannot reset the clock
+- [x] [`@agentveins/mcp`](https://www.npmjs.com/package/@agentveins/mcp): the same guard as an MCP server, so any MCP-capable agent governs its spending without importing the SDK — and cannot pay around a guard whose key it does not hold
+- [x] [`@agentveins/cli`](https://www.npmjs.com/package/@agentveins/cli): review and approve held payments from a terminal
+- [x] Claude Code plugin: the server plus a skill teaching an agent which refusals mean adapt, which mean stop, and which mean wait
+- [ ] `veins report`: spend by vendor, day and agent, with blocked-versus-settled ratios — the log already holds every number
+- [ ] Base adapter
+- [ ] Cloudflare Wallets adapter
 - [ ] Hosted dashboard: team policies, alerts, compliance exports
 - [ ] Privacy: payment-metadata redaction
+
+Both adapters above are stub interfaces that throw `NotImplementedError` today. Solana is the
+only rail that moves money, and only on devnet: no mainnet configuration exists anywhere in
+this repo.
 
 ## Why now
 
