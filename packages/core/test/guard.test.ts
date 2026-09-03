@@ -963,6 +963,36 @@ describe("an unconfirmed broadcast is recorded as uncertain", () => {
     expect(await verifyAuditLog(sink.entries, keys.publicKey)).toEqual({ ok: true, checked: 1 });
   });
 
+  // The devnet run that found this: the rpc rate-limited the status poll, the adapter reported a
+  // plain adapter_error, and eight transfers that had all landed were counted as five. A guard
+  // that under-counts money it already sent will authorise spending over its own daily cap.
+  it("counts the spend when the rail could not determine the outcome, whatever the code", async () => {
+    const sink = memoryAuditSink();
+    const { guard } = await guardWith(
+      fakeAdapter({
+        execute: vi.fn(async () => {
+          throw Object.assign(
+            new Error("transaction sig-xyz did not confirm: the status check failed: HTTP error (429)"),
+            { unconfirmedSignature: "sig-xyz" },
+          );
+        }),
+      }),
+      sink,
+    );
+
+    const result = await guard.pay(request);
+
+    expect(result.status).toBe("failed");
+    if (result.status === "failed") {
+      expect(result.error.code).toBe("adapter_error");
+      expect(result.error.txSig).toBe("sig-xyz");
+    }
+    const entry = sink.entries.at(-1)!;
+    expect(entry.outcome).toBe("uncertain");
+    expect(entry.txSig).toBe("sig-xyz");
+    expect(guard.state().windows["daily:2026-08-13"]?.spentMinor).toBe(50_000n);
+  });
+
   it("survives a restart with the uncertain spend still counted", async () => {
     const sink = memoryAuditSink();
     const { guard } = await guardWith(timeoutAdapter(), sink);
